@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: ms-clientes
+  # El resto de la configuracion -puerto, base de datos, Kafka, Eureka- no esta
+  # aqui sino en el servidor de configuracion. Este archivo solo dice como se
+  # llama este servicio y donde preguntar por lo demas.
+  #
+  # "optional:" permite que las pruebas y los arranques locales sin
+  # config-server no fallen; en Docker la variable CONFIG_IMPORT lo vuelve
+  # obligatorio, para que un servicio nunca arranque con valores a medias.
+  config:
+    import: ${CONFIG_IMPORT:optional:configserver:http://localhost:8888}

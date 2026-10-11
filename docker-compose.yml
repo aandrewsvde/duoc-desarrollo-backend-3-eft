@@ -1,0 +1,407 @@
+# =====================================================================
+# Banco XYZ - Plataforma completa
+#
+# Quince contenedores en cuatro grupos: infraestructura (PostgreSQL,
+# Kafka y su panel), plataforma (configuracion, descubrimiento,
+# identidad y gateway), negocio (los tres microservicios mas el
+# consumidor de notificaciones y el batch de migracion) y canales (los
+# tres BFF).
+#
+# El orden de arranque no se deja al azar: cada servicio declara de que
+# depende y espera a que ese otro este SANO, no solo iniciado. La
+# diferencia importa porque un contenedor de PostgreSQL responde al
+# puerto segundos antes de aceptar consultas, y un servicio que arranca
+# en esa ventana muere al no poder crear su esquema.
+#
+# Para escalado horizontal, ver docker-compose.escalado.yml.
+# =====================================================================
+
+name: banco-xyz-eft
+
+x-comunes: &comunes
+  CONFIG_IMPORT: configserver:http://config-server:8888
+  EUREKA_URL: http://eureka-server:8761/eureka
+  KAFKA_BOOTSTRAP: kafka:9092
+  # El emisor que se exige en el token es el publico; las claves con las
+  # que se verifica la firma se piden por la red interna. Separar ambos es
+  # lo que permite que el mismo token sirva al navegador y entre
+  # contenedores.
+  ISSUER_URI: http://localhost:9000
+  JWK_SET_URI: http://authorization-server:9000/oauth2/jwks
+  OAUTH_TOKEN_URI: http://authorization-server:9000/oauth2/token
+
+# Techo de recursos para cada servicio Spring.
+#
+# Doce JVM arrancando a la vez en un portatil de 15 W llevan el procesador
+# al limite termico durante minutos. El limite de CPU es la red de
+# seguridad que impide que un servicio solo se lleve la maquina entera; la
+# otra mitad del arreglo esta en el Dockerfile, donde se le dice a cada JVM
+# que se dimensione para dos nucleos en vez de para dieciseis.
+#
+# 1.5 nucleos y 768 MiB sobran para la carga de una demostracion. En un
+# despliegue real estos numeros salen de medir, no de estimar.
+x-limites: &limites
+  cpus: 1.5
+  mem_limit: 768m
+
+x-sonda: &sonda
+  interval: 5s
+  timeout: 3s
+  retries: 40
+  start_period: 30s
+
+services:
+
+  # -------------------------------------------------------------------
+  # Infraestructura
+  # -------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: bancoxyz-eft-postgres
+    environment:
+      POSTGRES_USER: bancoxyz
+      POSTGRES_PASSWORD: bancoxyz
+      POSTGRES_DB: postgres
+    ports:
+      # 5436 en el anfitrion para no chocar con una instalacion local de
+      # PostgreSQL ni con los entregables de las experiencias anteriores.
+      - "5436:5432"
+    volumes:
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+      - postgres-datos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bancoxyz -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [banco]
+
+  kafka:
+    # Modo KRaft: Kafka gestiona su propio consenso y ya no necesita
+    # ZooKeeper. Son dos contenedores menos y una pieza menos que falla.
+    image: apache/kafka:3.8.0
+    container_name: bancoxyz-eft-kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNO://:29092
+      # Dos direcciones anunciadas porque hay dos clases de cliente: los
+      # contenedores, que llegan por el nombre de red "kafka", y los
+      # scripts de evidencia que corren fuera de Docker y solo pueden
+      # llegar por localhost. Kafka indica al cliente a que direccion
+      # conectarse, de modo que anunciar una sola dejaria fuera a la otra.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNO://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNO:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Factor 1 porque hay un solo broker. En produccion seria 3 como
+      # minimo: con 1, la caida del broker pierde los datos.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: bancoxyz-eft-kraft-01
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    networks: [banco]
+
+  kafka-ui:
+    # Panel de solo lectura sobre el broker. No forma parte del sistema:
+    # existe para poder mostrar los topicos y sus mensajes como evidencia.
+    image: provectuslabs/kafka-ui:latest
+    container_name: bancoxyz-eft-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: banco-xyz
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+      AUTH_TYPE: DISABLED
+    depends_on:
+      kafka: {condition: service_healthy}
+    networks: [banco]
+
+  # -------------------------------------------------------------------
+  # Plataforma
+  # -------------------------------------------------------------------
+  config-server:
+    build: {context: ., dockerfile: docker/Dockerfile, target: config-server}
+    image: bancoxyz/config-server:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-config-server
+    ports: ["8888:8888"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  eureka-server:
+    build: {context: ., dockerfile: docker/Dockerfile, target: eureka-server}
+    image: bancoxyz/eureka-server:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-eureka
+    ports: ["8761:8761"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  authorization-server:
+    build: {context: ., dockerfile: docker/Dockerfile, target: authorization-server}
+    image: bancoxyz/authorization-server:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-authorization-server
+    ports: ["9000:9000"]
+    environment:
+      <<: *comunes
+      # El emisor se mantiene en localhost aunque el servicio corra en
+      # Docker, porque es la direccion a la que el NAVEGADOR del usuario
+      # es redirigido durante el login. Si aqui figurara el nombre del
+      # contenedor, la redireccion llevaria a un host que el navegador no
+      # resuelve y el flujo de codigo de autorizacion no se completaria.
+      OAUTH_ISSUER: http://localhost:9000
+      OAUTH_REDIRECT_URI: http://127.0.0.1:9000/autorizado
+    depends_on:
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  # -------------------------------------------------------------------
+  # Microservicios de negocio
+  #
+  # Los tres primeros son los que pide el caso. ms-notificaciones se
+  # agrega como consumidor puro: demuestra que un servicio nuevo puede
+  # reaccionar a los eventos sin que el productor sepa que existe.
+  # -------------------------------------------------------------------
+
+  ms-clientes:
+    build: {context: ., dockerfile: docker/Dockerfile, target: ms-clientes}
+    image: bancoxyz/ms-clientes:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-ms-clientes
+    ports: ["8084:8084"]
+    environment:
+      <<: *comunes
+      DB_URL: jdbc:postgresql://postgres:5432/bancoxyz_clientes
+    depends_on:
+      kafka: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8084/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  ms-cuentas:
+    build: {context: ., dockerfile: docker/Dockerfile, target: ms-cuentas}
+    image: bancoxyz/ms-cuentas:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-ms-cuentas
+    ports: ["8081:8081"]
+    environment:
+      <<: *comunes
+      DB_URL: jdbc:postgresql://postgres:5432/bancoxyz_cuentas
+    depends_on:
+      kafka: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  ms-pagos:
+    build: {context: ., dockerfile: docker/Dockerfile, target: ms-pagos}
+    image: bancoxyz/ms-pagos:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-ms-pagos
+    ports: ["8082:8082"]
+    environment:
+      <<: *comunes
+      DB_URL: jdbc:postgresql://postgres:5432/bancoxyz_pagos
+    depends_on:
+      kafka: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  ms-notificaciones:
+    build: {context: ., dockerfile: docker/Dockerfile, target: ms-notificaciones}
+    image: bancoxyz/ms-notificaciones:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-ms-notificaciones
+    ports: ["8083:8083"]
+    environment:
+      <<: *comunes
+    depends_on:
+      kafka: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  # -------------------------------------------------------------------
+  # Canales (BFF)
+  #
+  # No dependen de PostgreSQL: un BFF no tiene base de datos. Si la
+  # tuviera, la personalizacion por canal se convertiria en tres
+  # verdades distintas del mismo saldo.
+  # -------------------------------------------------------------------
+
+  bff-web:
+    build: {context: ., dockerfile: docker/Dockerfile, target: bff-web}
+    image: bancoxyz/bff-web:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-bff-web
+    ports: ["8091:8091"]
+    environment:
+      <<: *comunes
+    depends_on:
+      kafka: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8091/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  bff-movil:
+    build: {context: ., dockerfile: docker/Dockerfile, target: bff-movil}
+    image: bancoxyz/bff-movil:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-bff-movil
+    ports: ["8092:8092"]
+    environment:
+      <<: *comunes
+    depends_on:
+      kafka: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8092/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  bff-cajero:
+    build: {context: ., dockerfile: docker/Dockerfile, target: bff-cajero}
+    image: bancoxyz/bff-cajero:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-bff-cajero
+    ports: ["8093:8093"]
+    environment:
+      <<: *comunes
+    depends_on:
+      kafka: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      eureka-server: {condition: service_healthy}
+      authorization-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8093/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+  # -------------------------------------------------------------------
+  # Migracion batch
+  #
+  # Arranca con el resto pero NO ejecuta nada al iniciar: espera a que lo
+  # disparen por REST. Arrancar los jobs solo haria que cada reinicio del
+  # contenedor reprocesara el legado entero.
+  # -------------------------------------------------------------------
+  batch-financiero:
+    build: {context: ., dockerfile: docker/Dockerfile, target: batch-financiero}
+    image: bancoxyz/batch-financiero:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-batch
+    ports: ["8085:8085"]
+    environment:
+      <<: *comunes
+      DB_URL: jdbc:postgresql://postgres:5432/bancoxyz_batch
+      DB_CLIENTES_URL: jdbc:postgresql://postgres:5432/bancoxyz_clientes
+      DB_CUENTAS_URL: jdbc:postgresql://postgres:5432/bancoxyz_cuentas
+      DB_PAGOS_URL: jdbc:postgresql://postgres:5432/bancoxyz_pagos
+      ORIGEN_DATOS: /datos/legacy
+      SEMANA_DATOS: semana_3
+      SALIDA_INFORMES: /datos/salida
+    volumes:
+      # Los CSV del sistema legado se montan, no se empaquetan en la
+      # imagen: son datos de entrada que cambian por si solos, y una
+      # imagen con datos dentro habria que reconstruirla cada vez.
+      - ./datos/legacy:/datos/legacy:ro
+      - ./datos/salida:/datos/salida
+    depends_on:
+      postgres: {condition: service_healthy}
+      config-server: {condition: service_healthy}
+      ms-clientes: {condition: service_healthy}
+      ms-cuentas: {condition: service_healthy}
+      ms-pagos: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
+    networks: [banco]
+
+  # -------------------------------------------------------------------
+  # Puerta de entrada
+  #
+  # Arranca al final: antes de el deben estar registrados en Eureka los
+  # servicios a los que enruta, o las primeras peticiones responderian
+  # 503 mientras el balanceador descubre las instancias.
+  # -------------------------------------------------------------------
+  api-gateway:
+    build: {context: ., dockerfile: docker/Dockerfile, target: api-gateway}
+    image: bancoxyz/api-gateway:1.0.0
+    <<: *limites
+    container_name: bancoxyz-eft-api-gateway
+    ports: ["8080:8080"]
+    environment:
+      <<: *comunes
+    depends_on:
+      ms-clientes: {condition: service_healthy}
+      ms-cuentas: {condition: service_healthy}
+      ms-pagos: {condition: service_healthy}
+      ms-notificaciones: {condition: service_healthy}
+      bff-web: {condition: service_healthy}
+      bff-movil: {condition: service_healthy}
+      bff-cajero: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      <<: *sonda
+    networks: [banco]
+
+# Red propia y no la predeterminada: los contenedores se resuelven entre
+# si por su nombre de servicio y quedan aislados de otros proyectos de
+# Docker que corran en la misma maquina.
+networks:
+  banco:
+    driver: bridge
+
+volumes:
+  postgres-datos:

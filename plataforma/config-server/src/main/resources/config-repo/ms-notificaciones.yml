@@ -1,0 +1,19 @@
+# ms-notificaciones: consumidor puro de eventos.
+#
+# No tiene base de datos a proposito. Una notificacion es un aviso efimero:
+# una vez entregada deja de importar, y guardarla en una base agregaria un
+# contenedor y un esquema que mantener para algo que nadie volvera a leer.
+#
+# Su razon de ser en el proyecto es demostrar que un servicio nuevo puede
+# reaccionar a los eventos sin que el productor sepa que existe.
+server:
+  port: ${SERVER_PORT:8083}
+
+spring:
+  kafka:
+    consumer:
+      group-id: ms-notificaciones
+
+banco:
+  notificaciones:
+    maximo-en-memoria: 200

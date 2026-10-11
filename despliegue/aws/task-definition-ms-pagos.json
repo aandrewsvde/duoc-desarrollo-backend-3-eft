@@ -1,0 +1,104 @@
+{
+  "_comentario": [
+    "Definicion de tarea de ECS Fargate para ms-pagos, como EJEMPLO comentado.",
+    "Los demas servicios son equivalentes: cambian la imagen, el puerto y las",
+    "variables propias. No se registro en ninguna cuenta.",
+    "",
+    "Sustituir <ID-CUENTA> y <REGION> antes de usarla."
+  ],
+
+  "family": "banco-xyz-ms-pagos",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+
+  "_comentario_tamano": [
+    "0.5 vCPU y 1 GiB es el minimo razonable para una aplicacion Spring Boot.",
+    "Con 512 MiB el arranque funciona pero la JVM pasa el dia recolectando",
+    "basura, y el coste de subir a 1 GiB es menor que el de diagnosticarlo."
+  ],
+  "cpu": "512",
+  "memory": "1024",
+
+  "_comentario_roles": [
+    "En el laboratorio de AWS Academy solo existe LabRole y no se pueden crear",
+    "roles nuevos. En una cuenta propia, executionRole es el que usa ECS para",
+    "descargar la imagen y escribir logs, y taskRole el que usa la APLICACION",
+    "para hablar con otros servicios de AWS. Separarlos importa: la aplicacion",
+    "no tiene por que poder leer de ECR."
+  ],
+  "executionRoleArn": "arn:aws:iam::<ID-CUENTA>:role/LabRole",
+  "taskRoleArn": "arn:aws:iam::<ID-CUENTA>:role/LabRole",
+
+  "containerDefinitions": [
+    {
+      "name": "ms-pagos",
+      "image": "<ID-CUENTA>.dkr.ecr.<REGION>.amazonaws.com/banco-xyz/ms-pagos:1.0.0",
+      "essential": true,
+
+      "portMappings": [
+        {
+          "containerPort": 8082,
+          "protocol": "tcp",
+          "_comentario": "Sin hostPort: en awsvpc la tarea tiene su propia IP."
+        }
+      ],
+
+      "_comentario_variables": [
+        "Las direcciones salen de variables de entorno, igual que en Compose.",
+        "Eso es lo que permite mover el sistema a AWS sin tocar codigo: lo",
+        "unico que cambia es a donde apuntan."
+      ],
+      "environment": [
+        { "name": "CONFIG_IMPORT", "value": "configserver:http://config-server.banco-xyz.local:8888" },
+        { "name": "EUREKA_URL",    "value": "http://eureka-server.banco-xyz.local:8761/eureka" },
+        { "name": "EUREKA_HOSTNAME", "value": "ms-pagos.banco-xyz.local" },
+        { "name": "KAFKA_BOOTSTRAP", "value": "b-1.bancoxyz.<REGION>.amazonaws.com:9092" },
+        { "name": "ISSUER_URI",    "value": "https://banco-xyz.ejemplo.cl" },
+        { "name": "JWK_SET_URI",   "value": "http://authorization-server.banco-xyz.local:9000/oauth2/jwks" },
+        { "name": "OAUTH_TOKEN_URI", "value": "http://authorization-server.banco-xyz.local:9000/oauth2/token" },
+        { "name": "JAVA_OPTS",     "value": "-XX:MaxRAMPercentage=75 -XX:+UseContainerSupport" }
+      ],
+
+      "_comentario_secretos": [
+        "La URL de la base y el secreto del cliente OAuth NO van en texto:",
+        "una definicion de tarea la puede leer cualquiera con permiso de",
+        "lectura sobre ECS. Van en Secrets Manager y ECS los inyecta al",
+        "arrancar el contenedor."
+      ],
+      "secrets": [
+        { "name": "DB_URL",              "valueFrom": "arn:aws:secretsmanager:<REGION>:<ID-CUENTA>:secret:banco-xyz/pagos/db-url" },
+        { "name": "DB_USER",             "valueFrom": "arn:aws:secretsmanager:<REGION>:<ID-CUENTA>:secret:banco-xyz/pagos/db-user" },
+        { "name": "DB_PASSWORD",         "valueFrom": "arn:aws:secretsmanager:<REGION>:<ID-CUENTA>:secret:banco-xyz/pagos/db-password" },
+        { "name": "OAUTH_CLIENT_SECRET", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ID-CUENTA>:secret:banco-xyz/pagos/oauth-secret" }
+      ],
+
+      "_comentario_sonda": [
+        "La MISMA sonda que usa Docker Compose en local. startPeriod de 60 s",
+        "porque una aplicacion Spring Boot con config-server y Eureka por",
+        "delante tarda en estar lista, y sin ese margen ECS la mata y la",
+        "reinicia en bucle."
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+
+      "_comentario_logs": [
+        "Un contenedor es efimero; sus registros no deben serlo. Sin esto, los",
+        "logs se van con la tarea y no queda nada que mirar cuando algo falla."
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/banco-xyz/ms-pagos",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

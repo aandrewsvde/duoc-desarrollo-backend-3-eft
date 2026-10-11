@@ -1,0 +1,22 @@
+# Compilados de Maven
+target/
+*.class
+
+# Python de los generadores del informe
+__pycache__/
+*.pyc
+
+# Cuarentena del batch: 72 CSV repetidos de varias ejecuciones.
+# Los informes de datos/salida/informes/ SI se versionan: son el producto
+# del batch y evidencian el criterio 3 sin tener que ejecutarlo.
+datos/salida/errores/
+
+# Entorno
+.env
+*.log
+
+# Editores y sistema
+.idea/
+.vscode/
+*.iml
+.DS_Store

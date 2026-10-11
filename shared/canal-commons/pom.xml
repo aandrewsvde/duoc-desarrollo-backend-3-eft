@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.duoc.bancoxyz</groupId>
+        <artifactId>banco-xyz-plataforma</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>canal-commons</artifactId>
+    <name>canal-commons</name>
+    <description>Fontaneria HTTP compartida por los tres BFF</description>
+
+    <!--
+      Que exista este modulo no contradice que los BFF sean independientes.
+      Lo compartido es solo COMO se habla con los microservicios -obtener un
+      token, resolver un nombre por Eureka, deserializar una respuesta-, que es
+      infraestructura identica en los tres. Lo que NO se comparte, y es lo que
+      define al patron, es QUE pide cada canal y QUE forma le da: eso vive
+      entero en cada BFF y puede cambiar sin tocar a los otros dos.
+
+      La alternativa seria triplicar el mismo cliente HTTP, y entonces una
+      correccion de seguridad habria que aplicarla tres veces y acordarse de
+      las tres.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+    </dependencies>
+</project>

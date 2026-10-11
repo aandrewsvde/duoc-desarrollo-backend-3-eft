@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: ${CONFIG_IMPORT:optional:configserver:http://localhost:8888}
+  main:
+    # Gateway es reactivo. Declararlo evita que una dependencia transitiva que
+    # arrastre la pila servlet cambie el tipo de aplicacion y deje el
+    # enrutamiento sin efecto, que es un fallo dificil de diagnosticar porque
+    # el servicio arranca sin errores.
+    web-application-type: reactive

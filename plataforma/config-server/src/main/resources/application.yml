@@ -1,0 +1,33 @@
+server:
+  port: 8888
+
+spring:
+  application:
+    name: config-server
+  profiles:
+    # Perfil native: las configuraciones se sirven desde el classpath y no desde
+    # un repositorio Git remoto, de modo que el ecosistema arranca sin salir a
+    # internet. En produccion bastaria cambiar a un backend git apuntando al
+    # repositorio de configuracion.
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: classpath:/config-repo
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{28} - %msg%n"

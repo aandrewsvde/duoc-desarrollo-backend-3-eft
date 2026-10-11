@@ -1,0 +1,104 @@
+# ms-cuentas: dueno exclusivo del saldo.
+#
+# Ningun otro servicio escribe sobre la tabla cuenta. Esa exclusividad es lo
+# que hace que el sistema sea de microservicios y no un monolito repartido:
+# ms-pagos no baja el saldo, publica un hecho y este servicio decide.
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  datasource:
+    # Base propia, no compartida. Si ms-pagos escribiera sobre este esquema, un
+    # cambio de columna obligaria a desplegar los dos a la vez y dejarian de ser
+    # independientes, que es lo unico que justifica partir el sistema.
+    url: ${DB_URL:jdbc:postgresql://localhost:5436/bancoxyz_cuentas}
+    username: ${DB_USER:bancoxyz}
+    password: ${DB_PASSWORD:bancoxyz}
+    hikari:
+      pool-name: cuentas-pool
+      maximum-pool-size: 10
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/esquema.sql
+  kafka:
+    consumer:
+      # Cada microservicio tiene su propio grupo: Kafka entrega una copia del
+      # evento a CADA grupo, de modo que cuentas y notificaciones reciben ambos
+      # el mismo mensaje sin competir entre si.
+      group-id: ms-cuentas
+
+banco:
+  moneda: CLP
+  servicio-clientes: ms-clientes
+  oauth:
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:9000/oauth2/token}
+    client-id: ${OAUTH_CLIENT_ID:banco-servicios}
+    client-secret: ${OAUTH_CLIENT_SECRET:banco-servicios-secreto-2026}
+    scopes: clientes.leer
+  simulacion:
+    # Palanca de prueba para evidenciar la resiliencia; en un despliegue real
+    # va en falso y el controlador ni siquiera se crea.
+    habilitada: ${SIMULACION_HABILITADA:true}
+
+# =====================================================================
+# Resilience4j
+#
+# Protege la unica llamada sincrona de este servicio: verificar el titular
+# en ms-clientes al ABRIR una cuenta. Todo lo demas -aplicar movimientos-
+# llega por eventos, donde Kafka ya absorbe la indisponibilidad.
+#
+# La politica de respaldo es la OPUESTA a la de ms-pagos, y es deliberado.
+# Ante un fallo de la dependencia, ms-pagos degrada y acepta -el evento se
+# resolvera despues-; aqui se rechaza. Abrir una cuenta a nombre de un
+# cliente que no se pudo verificar crea un registro incorrecto que luego
+# hay que deshacer a mano, mientras que un pago sin verificar lo resuelve
+# ms-cuentas al aplicarlo. Distinto riesgo, distinta decision.
+# =====================================================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      clientes:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - com.duoc.bancoxyz.cuentas.cliente.ClientesNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClienteNoExisteException
+  retry:
+    instances:
+      clientes:
+        max-attempts: 3
+        wait-duration: 300ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - com.duoc.bancoxyz.cuentas.cliente.ClientesNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClienteNoExisteException
+  bulkhead:
+    instances:
+      clientes:
+        max-concurrent-calls: 10
+        max-wait-duration: 100ms
+  ratelimiter:
+    instances:
+      clientes:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 200ms
+  timelimiter:
+    instances:
+      clientes:
+        timeout-duration: 3s
+        cancel-running-future: true

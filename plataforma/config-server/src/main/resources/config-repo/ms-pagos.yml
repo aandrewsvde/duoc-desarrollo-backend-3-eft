@@ -1,0 +1,145 @@
+# ms-pagos: origen de la saga y unico servicio con dependencias sincronas.
+#
+# Procesa pagos, transferencias y depositos. Es el unico que llama a otro
+# microservicio y espera respuesta, de modo que es tambien el unico que
+# necesita blindarse con Resilience4j: todo lo demas viaja por eventos, donde
+# Kafka ya absorbe la indisponibilidad del consumidor.
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5436/bancoxyz_pagos}
+    username: ${DB_USER:bancoxyz}
+    password: ${DB_PASSWORD:bancoxyz}
+    hikari:
+      pool-name: pagos-pool
+      maximum-pool-size: 10
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/esquema.sql
+  kafka:
+    consumer:
+      group-id: ms-pagos
+
+banco:
+  moneda: CLP
+  # Nombres con los que se buscan en Eureka. No son URL: Eureka resuelve las
+  # instancias vivas en el momento de la llamada, que es lo que permite escalar
+  # ms-cuentas a varias replicas sin tocar nada aqui.
+  servicio-cuentas: ms-cuentas
+  servicio-clientes: ms-clientes
+  oauth:
+    # Credenciales con las que este servicio se identifica ante los demas por
+    # client_credentials. Pide solo alcances de lectura: aunque el token se
+    # filtrara, no serviria para mover dinero.
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:9000/oauth2/token}
+    client-id: ${OAUTH_CLIENT_ID:banco-servicios}
+    client-secret: ${OAUTH_CLIENT_SECRET:banco-servicios-secreto-2026}
+    scopes: cuentas.leer clientes.leer
+
+# =====================================================================
+# Resilience4j
+#
+# Protege las llamadas sincronas a ms-cuentas y a ms-clientes. Cada patron
+# cubre un modo de fallo distinto y por si solo ninguno basta.
+# =====================================================================
+resilience4j:
+  circuitbreaker:
+    configs:
+      # Configuracion base compartida: las dos instancias se protegen igual y
+      # heredan de aqui. Repetir el bloque invitaria a que diverjan sin querer.
+      porDefecto:
+        # Ventana por CANTIDAD y no por tiempo: con trafico bajo, una ventana
+        # temporal puede cerrar el periodo sin llamadas suficientes y nunca
+        # llegar a evaluar nada.
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        # Tras abrirse espera 10 s antes de dejar pasar 3 llamadas de prueba.
+        # Si esas tres funcionan cierra; si no, vuelve a abrir.
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+          - com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+        # Que un recurso no exista significa que el otro servicio esta sano y
+        # respondio lo correcto. Si contara como fallo, un cliente pidiendo
+        # cuentas inexistentes bastaria para abrir el cortocircuito y dejar sin
+        # servicio una dependencia que funciona.
+        ignore-exceptions:
+          - com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+    instances:
+      cuentas:
+        base-config: porDefecto
+      clientes:
+        base-config: porDefecto
+
+  retry:
+    configs:
+      porDefecto:
+        max-attempts: 3
+        wait-duration: 300ms
+        # Espera creciente: reintentar tres veces de inmediato contra un
+        # servicio saturado solo agrega carga al que ya esta en problemas.
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+    instances:
+      cuentas:
+        base-config: porDefecto
+      clientes:
+        base-config: porDefecto
+
+  bulkhead:
+    configs:
+      porDefecto:
+        # Limita cuantas llamadas concurrentes pueden ir al otro servicio. Sin
+        # este tope, una lentitud alla consumiria todos los hilos de ms-pagos y
+        # lo arrastraria a la caida.
+        max-concurrent-calls: 10
+        max-wait-duration: 100ms
+    instances:
+      cuentas:
+        base-config: porDefecto
+      clientes:
+        base-config: porDefecto
+
+  ratelimiter:
+    configs:
+      porDefecto:
+        # Evita que este servicio tumbe al otro cuando vuelve: un servicio
+        # recien levantado que recibe de golpe la demanda acumulada se cae otra vez.
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 200ms
+    instances:
+      cuentas:
+        base-config: porDefecto
+      clientes:
+        base-config: porDefecto
+
+  timelimiter:
+    configs:
+      porDefecto:
+        # Techo de espera. Sin el, una dependencia que no responde pero tampoco
+        # cierra la conexion deja hilos colgados indefinidamente, que es peor
+        # que un error rapido.
+        timeout-duration: 3s
+        cancel-running-future: true
+    instances:
+      cuentas:
+        base-config: porDefecto
+      clientes:
+        base-config: porDefecto

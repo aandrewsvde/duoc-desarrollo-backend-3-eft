@@ -1,0 +1,35 @@
+# ms-clientes: dueno de la identidad y el perfil de los titulares.
+#
+# Es el servicio con los datos mas sensibles del sistema -nombres, edades,
+# segmento- y por eso es el unico que no expone ninguna operacion de escritura
+# masiva: los clientes entran por la migracion batch o de uno en uno.
+server:
+  port: ${SERVER_PORT:8084}
+
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5436/bancoxyz_clientes}
+    username: ${DB_USER:bancoxyz}
+    password: ${DB_PASSWORD:bancoxyz}
+    hikari:
+      pool-name: clientes-pool
+      maximum-pool-size: 10
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/esquema.sql
+  kafka:
+    consumer:
+      group-id: ms-clientes
+
+banco:
+  # Umbral del segmento preferente, en pesos de saldo consolidado. Vive en
+  # configuracion y no en el codigo porque es una regla comercial: cambia por
+  # decision del negocio, no por un cambio de software, y debe poder ajustarse
+  # sin reconstruir la imagen.
+  #
+  # 50.000 esta elegido sobre los datos reales de la migracion: con el umbral
+  # anterior de 20.000 los siete titulares quedaban preferentes y la
+  # segmentacion no distinguia nada.
+  segmento:
+    umbral-preferente: 50000

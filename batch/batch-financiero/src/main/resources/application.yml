@@ -1,0 +1,83 @@
+spring:
+  application:
+    name: batch-financiero
+  config:
+    import: ${CONFIG_IMPORT:optional:configserver:http://localhost:8888}
+  main:
+    # El batch no expone API de negocio, pero si un endpoint para lanzar los
+    # jobs. Sin servidor web habria que entrar al contenedor para ejecutarlos,
+    # que es justo lo que impide integrarlo con un planificador externo.
+    web-application-type: servlet
+
+# Los valores funcionales -rutas de entrada, tolerancia, reglas y tasas- los
+# entrega el config-server en batch-financiero.yml. Aqui quedan solo los que
+# describen COMO procesa este modulo, que no cambian entre entornos.
+banco:
+  entrada:
+    # Se resuelven contra el directorio montado en el contenedor. El prefijo
+    # file: es necesario: sin el, Spring los buscaria en el classpath y el
+    # arranque fallaria con un "resource not found" que no explica nada.
+    transacciones: file:${banco.migracion.origen}/${banco.migracion.semana}/movimientos_financieros_diarios.csv
+    intereses: file:${banco.migracion.origen}/${banco.migracion.semana}/intereses_trimestrales.csv
+    cuentas-anuales: file:${banco.migracion.origen}/${banco.migracion.semana}/estados_financieros_anuales.csv
+
+  salida:
+    directorio: ${banco.migracion.salida}
+
+  particion:
+    grid-size: ${banco.migracion.particiones}
+    chunk-size: ${banco.migracion.tamano-fragmento}
+    # El pool debe ser al menos tan grande como el grid: con un pool menor, las
+    # particiones sobrantes esperan en la cola y el paralelismo es aparente.
+    core-pool-size: ${banco.migracion.particiones}
+    max-pool-size: 16
+    queue-capacity: 64
+    thread-name-prefix: "particion-"
+
+  tolerancia:
+    # Los archivos legados traen cerca del 60% de registros defectuosos, de modo
+    # que el limite de omision debe ser holgado pero finito: si se supera, el
+    # job falla de forma controlada en vez de producir una salida parcial que
+    # nadie revisa.
+    skip-limit: 800
+    retry-limit: 3
+    backoff-inicial-ms: 200
+    backoff-multiplicador: 2.0
+    backoff-maximo-ms: 3000
+    # Proporcion minima de registros validos para dar el job por bueno. Por
+    # debajo de este umbral el decider deriva a revision y NO se carga nada en
+    # las bases de los microservicios.
+    umbral-calidad: 0.30
+
+  reglas:
+    tipos-transaccion-validos: credito,debito
+    tipos-cuenta-validos: ahorro,prestamo,hipoteca
+    tipos-movimiento-validos: deposito,retiro,compra,pago
+    nombres-invalidos: unknown,n/a,null,sin nombre
+    edad-minima: 18
+    edad-maxima: 100
+    anio-esperado: 2024
+    monto-anomalo-desde: 3000
+    descripcion-por-defecto: "SIN DESCRIPCION"
+
+  tasas:
+    # El archivo del legado se llama "intereses trimestrales", de modo que el
+    # periodo es el trimestre y no el mes. Las tasas vienen del config-server.
+    periodo: "2024-Q4"
+    ahorro: ${banco.intereses.tasa-ahorro}
+    prestamo: ${banco.intereses.tasa-prestamo}
+    hipoteca: ${banco.intereses.tasa-hipoteca}
+
+  benchmark:
+    repeticiones: 3
+    grid-sizes: 1,2,4,8
+    chunk-sizes: 50,100,250
+    archivo-salida: ${banco.migracion.salida}/benchmark/resultados_benchmark.md
+
+logging:
+  level:
+    root: INFO
+    com.duoc.bancoxyz: INFO
+    org.springframework.batch: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Banco XYZ - Infraestructura base para desplegar la plataforma en ECS Fargate.
+
+  NO SE APLICO sobre ninguna cuenta. Es un artefacto revisable: describe que
+  recursos haria falta crear y con que parametros, no un despliegue hecho.
+
+  Crea la red, el balanceador, el cluster de ECS y la base de datos. NO crea
+  las tareas ni los servicios de ECS: esos se registran aparte con las
+  definiciones de despliegue/aws/, para poder desplegar un servicio sin tocar
+  la infraestructura.
+
+Parameters:
+
+  ClaveBaseDatos:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    Description: >
+      Clave del usuario maestro de RDS. NoEcho evita que aparezca en la consola
+      ni en los eventos de la pila. En una cuenta propia conviene ir un paso mas
+      alla y generarla con Secrets Manager en vez de pasarla como parametro.
+
+  TipoInstanciaBD:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium]
+    Description: Tamano de la instancia de RDS.
+
+Mappings:
+  Red:
+    VPC:        { CIDR: 10.20.0.0/16 }
+    PublicaA:   { CIDR: 10.20.1.0/24 }
+    PublicaB:   { CIDR: 10.20.2.0/24 }
+    PrivadaA:   { CIDR: 10.20.11.0/24 }
+    PrivadaB:   { CIDR: 10.20.12.0/24 }
+
+Resources:
+
+  # -------------------------------------------------------------------
+  # Red
+  #
+  # Dos zonas de disponibilidad porque un ALB las exige, y porque una
+  # sola zona no es alta disponibilidad: es el mismo punto unico de
+  # fallo con mas pasos.
+  # -------------------------------------------------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [Red, VPC, CIDR]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: banco-xyz }]
+
+  PasarelaInternet:
+    Type: AWS::EC2::InternetGateway
+
+  AsociacionPasarela:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref PasarelaInternet
+
+  # Subredes publicas: solo para el balanceador. Nada de la aplicacion
+  # vive aqui.
+  SubredPublicaA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [Red, PublicaA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  SubredPublicaB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [Red, PublicaB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  # Subredes privadas: aqui corren las tareas y la base de datos. Sin IP
+  # publica. Es la diferencia entre "el microservicio no se puede
+  # alcanzar desde fuera" y "confiamos en que nadie lo intente".
+  SubredPrivadaA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [Red, PrivadaA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  SubredPrivadaB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [Red, PrivadaB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  TablaRutasPublica:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  RutaInternet:
+    Type: AWS::EC2::Route
+    DependsOn: AsociacionPasarela
+    Properties:
+      RouteTableId: !Ref TablaRutasPublica
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref PasarelaInternet
+
+  AsociacionRutaA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubredPublicaA, RouteTableId: !Ref TablaRutasPublica }
+
+  AsociacionRutaB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubredPublicaB, RouteTableId: !Ref TablaRutasPublica }
+
+  # -------------------------------------------------------------------
+  # Grupos de seguridad
+  #
+  # Encadenados a proposito: el ALB acepta de internet, las tareas
+  # aceptan SOLO del ALB, y la base acepta SOLO de las tareas. Cada capa
+  # nombra a la anterior en vez de abrir un rango de direcciones, de modo
+  # que no hay forma de llegar a la base sin pasar por una tarea.
+  # -------------------------------------------------------------------
+  SGBalanceador:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acepta HTTPS desde internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+
+  SGTareas:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Tareas de ECS; solo acepta trafico del balanceador
+      VpcId: !Ref VPC
+
+  # La regla va aparte para poder referenciar el grupo de seguridad del
+  # balanceador sin crear una dependencia circular entre los dos recursos.
+  ReglaTareasDesdeALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGTareas
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8093
+      SourceSecurityGroupId: !Ref SGBalanceador
+
+  # Las tareas se hablan entre si por toda la gama de puertos de la
+  # aplicacion. Se referencian a si mismas: una tarea solo acepta de otra
+  # tarea del mismo grupo.
+  ReglaTareasEntreSi:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGTareas
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 9000
+      SourceSecurityGroupId: !Ref SGTareas
+
+  SGBaseDatos:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL; solo acepta de las tareas de ECS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref SGTareas
+
+  # -------------------------------------------------------------------
+  # Base de datos
+  #
+  # Una sola instancia con varias bases dentro, igual que en local. En
+  # produccion de verdad serian instancias separadas por servicio; aqui
+  # la concesion es explicita y se documenta.
+  # -------------------------------------------------------------------
+  GrupoSubredesBD:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subredes privadas para RDS
+      SubnetIds: [!Ref SubredPrivadaA, !Ref SubredPrivadaB]
+
+  BaseDatos:
+    Type: AWS::RDS::DBInstance
+    # Retain y no Delete: borrar la pila NO debe llevarse la base de un
+    # banco por delante. Que haya que borrarla a mano es intencionado.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      DBInstanceIdentifier: banco-xyz
+      Engine: postgres
+      EngineVersion: '16.3'
+      DBInstanceClass: !Ref TipoInstanciaBD
+      AllocatedStorage: '20'
+      StorageEncrypted: true
+      MasterUsername: bancoxyz
+      MasterUserPassword: !Ref ClaveBaseDatos
+      DBSubnetGroupName: !Ref GrupoSubredesBD
+      VPCSecurityGroups: [!Ref SGBaseDatos]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      MultiAZ: false   # con MultiAZ se duplica el coste; para la demostracion no se justifica
+
+  # -------------------------------------------------------------------
+  # Balanceador y cluster
+  # -------------------------------------------------------------------
+  Balanceador:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: banco-xyz
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref SubredPublicaA, !Ref SubredPublicaB]
+      SecurityGroups: [!Ref SGBalanceador]
+
+  GrupoDestinoGateway:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: banco-xyz-gateway
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip   # awsvpc: cada tarea tiene su propia IP
+      HealthCheckPath: /actuator/health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: banco-xyz
+      ClusterSettings:
+        - { Name: containerInsights, Value: enabled }
+
+  # Espacio de nombres para el descubrimiento interno. Con el, cada
+  # servicio se alcanza como "ms-pagos.banco-xyz.local" y ECS mantiene
+  # el registro al dia solo: es el sustituto gestionado de Eureka.
+  EspacioNombres:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: banco-xyz.local
+      Vpc: !Ref VPC
+
+Outputs:
+
+  DireccionPublica:
+    Description: Direccion del balanceador; es la unica entrada al sistema
+    Value: !Sub "https://${Balanceador.DNSName}"
+
+  EndpointBaseDatos:
+    Description: Host de PostgreSQL para las variables DB_URL
+    Value: !GetAtt BaseDatos.Endpoint.Address
+
+  NombreCluster:
+    Value: !Ref Cluster
+
+  SubredesPrivadas:
+    Description: Donde se lanzan las tareas de ECS
+    Value: !Join [",", [!Ref SubredPrivadaA, !Ref SubredPrivadaB]]
+
+  GrupoSeguridadTareas:
+    Value: !Ref SGTareas

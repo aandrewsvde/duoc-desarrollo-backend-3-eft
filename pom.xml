@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.4</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.duoc.bancoxyz</groupId>
+    <artifactId>banco-xyz-plataforma</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>banco-xyz-plataforma</name>
+    <description>Modernizacion del core del Banco XYZ: batch, BFF y microservicios</description>
+
+    <!--
+      Doce modulos en cuatro grupos, que es la misma division con la que el
+      banco razona sobre el sistema:
+
+        PLATAFORMA     config-server, eureka-server, authorization-server y
+                       api-gateway. No contienen reglas de negocio: resuelven
+                       configuracion, descubrimiento, identidad y enrutamiento.
+
+        BATCH          batch-financiero. Es la MIGRACION: lee los archivos del
+                       sistema legado y deja los datos saneados en las bases de
+                       los microservicios. Se ejecuta y termina; no es un
+                       servicio que quede escuchando.
+
+        MICROSERVICIOS ms-clientes, ms-cuentas y ms-pagos son los tres que pide
+                       el caso, cada uno dueno exclusivo de su porcion del
+                       dominio. ms-notificaciones se agrega como consumidor
+                       puro: existe para demostrar que un servicio nuevo puede
+                       reaccionar a los eventos sin que el productor sepa que
+                       existe.
+
+        BFF            bff-web, bff-movil y bff-cajero. Un backend por canal,
+                       cada uno con su propio cliente OAuth 2.0 y su propia
+                       forma de la respuesta.
+
+      eventos-contrato es el unico modulo compartido: los tipos de los eventos
+      que viajan por Kafka. Se comparte porque productor y consumidor deben
+      coincidir en el formato, y tenerlo en un solo lugar hace que una
+      divergencia rompa la compilacion en vez de romper produccion.
+    -->
+    <modules>
+        <module>shared/eventos-contrato</module>
+        <module>shared/canal-commons</module>
+
+        <module>plataforma/config-server</module>
+        <module>plataforma/eureka-server</module>
+        <module>plataforma/authorization-server</module>
+        <module>plataforma/api-gateway</module>
+
+
+        <module>batch/batch-financiero</module>
+        <module>microservicios/ms-clientes</module>
+        <module>microservicios/ms-cuentas</module>
+        <module>microservicios/ms-pagos</module>
+        <module>microservicios/ms-notificaciones</module>
+
+        <module>bff/bff-web</module>
+        <module>bff/bff-movil</module>
+        <module>bff/bff-cajero</module>
+    </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <spring-cloud.version>2023.0.3</spring-cloud.version>
+        <springdoc.version>2.6.0</springdoc.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.duoc.bancoxyz</groupId>
+                <artifactId>eventos-contrato</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Declarado aqui y no doce veces: el endpoint de salud es lo que
+             permite a Docker Compose saber cuando un servicio esta realmente
+             listo, en vez de esperar un tiempo fijo y confiar en que alcance.
+
+             Por herencia lo recibe tambien eventos-contrato, que no es una
+             aplicacion y no lo necesita. Se acepta porque ese modulo solo lo
+             consumen los servicios de este mismo reactor, que ya lo traen. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

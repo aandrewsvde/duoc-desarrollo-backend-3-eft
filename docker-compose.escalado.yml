@@ -1,0 +1,44 @@
+# =====================================================================
+# Escalado horizontal de los tres microservicios de negocio.
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.escalado.yml \
+#          up -d --scale ms-cuentas=3 --scale ms-pagos=3 --scale ms-clientes=2
+#
+# Este archivo existe por una limitacion concreta de Docker Compose: un
+# servicio con "container_name" o con un puerto fijo del anfitrion NO
+# puede tener mas de una replica, porque el nombre y el puerto son
+# unicos. Quitarselos a los tres microservicios es todo lo que hace
+# falta; el resto del sistema ya estaba preparado:
+#
+#   - cada servicio se registra en Eureka con su propia instancia;
+#   - el gateway y los BFF resuelven "lb://ms-cuentas", no una direccion,
+#     de modo que descubren las replicas nuevas solas;
+#   - el campo "instancia" de cada respuesta delata cual contesto, que es
+#     como se comprueba desde fuera que el reparto es real.
+#
+# A las replicas se llega SOLO por el gateway, que es como debe ser: si
+# cada una publicara su puerto, el balanceo seria decorativo porque
+# cualquiera podria saltarselo.
+# =====================================================================
+
+services:
+
+  # "!reset" y no "null": asignar null a container_name no lo elimina, lo
+  # deja declarado y Compose sigue avisando de que no puede escalar. !reset
+  # es la unica forma de BORRAR un valor heredado del archivo base.
+  ms-clientes:
+    container_name: !reset null
+    ports: !reset []
+
+  ms-cuentas:
+    container_name: !reset null
+    ports: !reset []
+
+  ms-pagos:
+    container_name: !reset null
+    ports: !reset []
+
+  # El gateway sigue siendo unico: es la puerta, no un servicio replicado.
+  # En la nube quien cumple este papel es un balanceador gestionado (ALB),
+  # y ahi si hay varias instancias detras de una sola direccion.

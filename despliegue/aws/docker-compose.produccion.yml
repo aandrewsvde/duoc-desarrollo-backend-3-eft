@@ -1,0 +1,113 @@
+# =====================================================================
+# Superposicion para un despliegue real (camino A: EC2 con Compose).
+#
+# Uso:
+#   docker compose -f docker-compose.yml \
+#                  -f despliegue/aws/docker-compose.produccion.yml up -d
+#
+# Lo que hace, y por que cada cosa:
+#
+#   - CIERRA los puertos de todo lo que no es la puerta de entrada. En
+#     local se publican para poder mirar cada servicio; en un servidor
+#     con IP publica, publicar el puerto de un microservicio permite
+#     saltarse el gateway y, con el, la validacion del token.
+#
+#   - QUITA el panel de Kafka. Es una herramienta de observacion sin
+#     autenticacion: cualquiera que llegue a el puede leer los mensajes
+#     del banco y publicar otros.
+#
+#   - QUITA la palanca de simulacion de latencia, que existe solo para
+#     demostrar la resiliencia.
+#
+#   - Fija politicas de reinicio y limites de memoria, que en local
+#     estorban y en un servidor son lo que evita que un proceso que se
+#     desboca se lleve a los demas por delante.
+#
+# Lo que NO resuelve, y queda dicho en despliegue.md: sigue siendo una
+# sola maquina, sin TLS y con los datos en un volumen local.
+# =====================================================================
+
+services:
+
+  # El panel de Kafka no existe en este despliegue.
+  kafka-ui:
+    deploy:
+      replicas: 0
+    profiles: ["solo-local"]
+
+  # --- Infraestructura: sin puertos publicados ---
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+
+  kafka:
+    # Solo el oyente interno: el externo existia para los guiones de
+    # evidencia que corren fuera de Docker.
+    ports: !reset []
+    restart: unless-stopped
+
+  # --- Plataforma: solo el servidor de autorizacion se expone ---
+  config-server:
+    ports: !reset []
+    restart: unless-stopped
+
+  eureka-server:
+    ports: !reset []
+    restart: unless-stopped
+
+  authorization-server:
+    # Si se expone porque el navegador del usuario lo alcanza durante el
+    # login. Sustituir por la direccion publica real.
+    ports: ["9000:9000"]
+    restart: unless-stopped
+    environment:
+      OAUTH_ISSUER: ${OAUTH_ISSUER:?Falta la direccion publica del servidor de autorizacion}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:?Falta el redirect URI publico}
+
+  # --- Microservicios: nunca expuestos ---
+  ms-clientes:
+    ports: !reset []
+    restart: unless-stopped
+
+  ms-cuentas:
+    ports: !reset []
+    restart: unless-stopped
+    environment:
+      # Se apaga la palanca de simulacion: con ella encendida, cualquiera
+      # con un token valido puede degradar el servicio a voluntad.
+      SIMULACION_HABILITADA: "false"
+
+  ms-pagos:
+    ports: !reset []
+    restart: unless-stopped
+
+  ms-notificaciones:
+    ports: !reset []
+    restart: unless-stopped
+
+  # --- Canales: tampoco se exponen; se llega por el gateway ---
+  bff-web:
+    ports: !reset []
+    restart: unless-stopped
+
+  bff-movil:
+    ports: !reset []
+    restart: unless-stopped
+
+  bff-cajero:
+    ports: !reset []
+    restart: unless-stopped
+
+  # --- Batch: sin puerto publicado ---
+  #
+  # Su endpoint de lanzamiento no lleva autenticacion, de modo que
+  # publicarlo permitiria a cualquiera reprocesar el legado y, con ello,
+  # vaciar y recargar las bases operativas.
+  batch-financiero:
+    ports: !reset []
+    restart: unless-stopped
+
+  # --- La unica puerta ---
+  api-gateway:
+    ports: ["8080:8080"]
+    restart: unless-stopped

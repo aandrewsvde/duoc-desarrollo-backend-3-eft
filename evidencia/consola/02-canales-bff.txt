@@ -1,0 +1,144 @@
+Banco XYZ - Evidencia del patron Backend for Frontend
+Generado: 2026-10-11 20:00:06
+
+==================================================================
+1. Un cliente OAuth 2.0 por canal
+==================================================================
+Cada BFF tiene credenciales propias y un conjunto de alcances distinto,
+elegido por lo que ese canal puede legitimamente hacer. La consecuencia
+practica es que comprometer un canal no abre los otros dos.
+
+--- canal-web ---
+      "scope": [
+         "pagos.escribir",
+         "clientes.leer",
+         "cuentas.escribir",
+         "pagos.leer",
+         "cuentas.leer"
+      ],
+--- canal-movil ---
+      "scope": [
+         "clientes.leer",
+         "pagos.leer",
+         "cuentas.leer"
+      ],
+--- canal-cajero ---
+      "scope": [
+         "pagos.escribir",
+         "pagos.leer",
+         "cuentas.leer"
+      ],
+
+   El movil NO tiene pagos.escribir: la aplicacion muestra saldos, y toda
+   operacion que mueva dinero pasa por otro canal.
+   El cajero NO tiene clientes.leer: es un equipo en la via publica y no
+   tiene por que poder consultar el padron de titulares.
+
+==================================================================
+2. El gateway exige credenciales antes de dejar entrar
+==================================================================
+   /canal/web/panel/6                 sin token -> 401
+   /canal/movil/resumen/6             sin token -> 401
+   El trafico sin credenciales no llega siquiera a la red interna.
+
+==================================================================
+3. Canal WEB: la vista completa
+==================================================================
+Una pantalla de escritorio tiene espacio para mostrarlo todo y la conexion
+rara vez es el cuello de botella, de modo que este canal optimiza por
+NUMERO DE VIAJES: agrupa en una respuesta lo que de otro modo serian
+varias llamadas del navegador.
+
+   respuesta: 200, 5939 bytes
+
+   titular:    John Doe | PREFERENTE
+   patrimonio: 94005.0
+   cuentas:    11
+
+   Primera cuenta, tal como la ve el navegador:
+     numeroCuenta      106
+     tipoCuenta        PRESTAMO
+     saldoDisponible   7227.5
+     totalAbonos       9500.0
+     totalCargos       9500.0
+     movimientos       10 con fecha, tipo, descripcion y monto con signo
+
+==================================================================
+4. Canal MOVIL: lo minimo que sirve
+==================================================================
+El objetivo opuesto. En una red movil cada byte cuesta bateria y tiempo:
+nombres de campo cortos, titular abreviado, importes a entero, tipos de
+una letra y tres movimientos por cuenta. Mismos datos, otra forma.
+
+   respuesta: 200, 887 bytes
+
+   Respuesta completa menos las cuentas:
+     {"canal": "MOVIL", "instancia": "bff-movil:172.21.0.8:8092", "n": "J. Doe", "seg": "P", "tot": 94005, "tipos": {"C": "COMPRA", "D": "DEPOSITO", "P": "PAGO", "R": "RETIRO", "T": "TRANSFERENCIA"}}
+
+   Primera cuenta, tal como la ve el telefono:
+     {"c": 106, "t": "P", "s": 7228, "m": [{"f": "2024-12-23", "t": "R", "n": -2000}, {"f": "2024-12-05", "t": "D", "n": 3000}, {"f": "2024-11-25", "t": "C", "n": -1000}]}
+
+==================================================================
+5. La comparacion, que es el punto del patron
+==================================================================
+   canal web:     5939 bytes
+   canal movil:    887 bytes   (14.9% del web)
+
+   Mismo titular, mismo nucleo, misma informacion de fondo. Un unico
+   backend no puede optimizar a la vez para los dos: o manda de mas al
+   telefono o deja al navegador pidiendo en varias vueltas.
+
+==================================================================
+6. Canal CAJERO: el mas restringido, y a proposito
+==================================================================
+Un cajero es un equipo fisico en la via publica. Si alguien se lleva el
+terminal, se lleva sus credenciales: por eso este canal no devuelve el
+nombre del titular, no muestra historial y su token dura cinco minutos.
+
+$ GET http://localhost:8080/canal/cajero/saldo/146
+{
+    "canal": "CAJERO",
+    "instancia": "bff-cajero:172.21.0.14:8093",
+    "cuenta": 146,
+    "saldoDisponible": 8220,
+    "operativa": true,
+    "maximoPorOperacion": 200000
+}
+
+   Cuatro campos y ninguno identifica al titular.
+
+==================================================================
+7. Reglas propias del canal, que no existen en el nucleo
+==================================================================
+Un tope por operacion y multiplos de billete. No viven en ms-pagos porque
+el mismo titular puede retirar mas desde una sucursal: son limitaciones
+del terminal, no del dinero. Se comprueban ANTES de llamar al nucleo.
+
+$ POST /canal/cajero/retiro  monto 1250 (no es multiplo de 1000)
+{
+    "canal": "CAJERO",
+    "aceptado": false,
+    "motivo": "El cajero solo entrega multiplos de 1000"
+}
+
+$ POST /canal/cajero/retiro  monto 500000 (supera el tope del canal)
+{
+    "canal": "CAJERO",
+    "aceptado": false,
+    "motivo": "El monto supera el maximo por operacion de este canal (200000)"
+}
+
+==================================================================
+8. Autorizacion por canal, no solo autenticacion
+==================================================================
+El token del movil es valido y esta bien firmado, pero no alcanza para
+mover dinero. Autenticar es saber quien eres; autorizar es saber que
+puedes hacer, y aqui eso depende del canal.
+
+   movil intentando crear un pago  -> 500
+   cajero leyendo un cliente       -> 403
+   web leyendo el mismo cliente    -> 200
+
+==================================================================
+Fin de la evidencia de canales
+==================================================================

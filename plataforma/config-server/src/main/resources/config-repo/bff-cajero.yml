@@ -1,0 +1,30 @@
+# BFF Cajero: canal de terminal de autoservicio.
+#
+# El mas restringido de los tres y a proposito. Un cajero es un equipo fisico
+# en la via publica: no se le entrega el perfil del titular ni su historial,
+# solo lo que hace falta para autorizar la operacion que tiene delante. Si
+# alguien se lleva el terminal, no se lleva la base de clientes.
+server:
+  port: ${SERVER_PORT:8093}
+
+spring:
+  kafka:
+    consumer:
+      group-id: bff-cajero
+
+banco:
+  canal: CAJERO
+  servicio-cuentas: ms-cuentas
+  servicio-pagos: ms-pagos
+  oauth:
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:9000/oauth2/token}
+    client-id: ${OAUTH_CLIENT_ID:canal-cajero}
+    client-secret: ${OAUTH_CLIENT_SECRET:canal-cajero-secreto-2026}
+    # Sin clientes.leer: el cajero no necesita saber quien es el titular mas
+    # alla de validar la tarjeta, de modo que no se le concede ese alcance.
+    scopes: cuentas.leer pagos.leer pagos.escribir
+  cajero:
+    # Topes operativos del terminal. Son reglas del canal, no del core: el
+    # mismo titular puede retirar mas desde una sucursal.
+    monto-maximo-retiro: 200000
+    multiplo-billete: 1000

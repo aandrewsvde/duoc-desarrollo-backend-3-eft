@@ -1,0 +1,15 @@
+# Lo que no debe viajar al contexto de construccion.
+#
+# target/ es lo importante: sin excluirlo, Docker envia los jar ya
+# compilados en la maquina anfitriona -cientos de megas- y ademas la
+# etapa de compilacion podria reutilizar clases obsoletas en vez de
+# compilar desde cero.
+target/
+**/target/
+evidencia/
+informe/
+datos/
+*.zip
+.git/
+.idea/
+*.iml

@@ -1,0 +1,113 @@
+# =====================================================================
+# Configuracion comun a TODOS los microservicios.
+#
+# El config-server la entrega a cualquier cliente que la pida, antes de
+# la configuracion especifica de cada uno. Lo que vive aqui es lo que
+# seria identico en los siete servicios: donde esta Eureka, donde esta
+# Kafka y quien emite los tokens.
+#
+# Los valores se resuelven con variables de entorno y un valor por
+# defecto apto para ejecucion local. Docker Compose sobreescribe las
+# variables con los nombres de servicio de su red interna, de modo que
+# el MISMO archivo sirve para los dos escenarios.
+# =====================================================================
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+    register-with-eureka: true
+    fetch-registry: true
+    # Cada cliente guarda una copia local del registro y la refresca cada 30
+    # segundos por defecto. Ese valor es razonable en produccion -evita castigar
+    # a Eureka-, pero aqui significa que el gateway puede responder 503 durante
+    # medio minuto tras el arranque, para servicios que ya estan en pie. Se baja
+    # a 5 segundos, en linea con la renovacion de arriendo ya configurada.
+    registry-fetch-interval-seconds: 5
+  instance:
+    # Cada instancia se anuncia por su DIRECCION IP, no por un nombre.
+    #
+    # Es lo que hace posible el escalado horizontal. Con un nombre fijo por
+    # servicio, las tres replicas de ms-cuentas se registrarian con el mismo
+    # identificador y Eureka las tomaria por una sola: el balanceo seria
+    # decorativo y nadie se enteraria, porque todo parece funcionar.
+    #
+    # Dentro de una red de Docker la IP del contenedor es unica y resoluble,
+    # que es donde ocurren TODAS las llamadas entre servicios. El unico efecto
+    # de no usar nombres es cosmetico: los enlaces del panel de Eureka apuntan
+    # a direcciones de la red interna, no navegables desde el anfitrion.
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${spring.cloud.client.ip-address}:${server.port}
+    lease-renewal-interval-in-seconds: 5
+    lease-expiration-duration-in-seconds: 10
+
+spring:
+  kafka:
+    # Fuera de Docker se llega al oyente externo del broker, publicado en el
+    # 29092; dentro de la red de contenedores, a kafka:9092.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # acks=all: el productor espera confirmacion de todas las replicas en
+      # sincronia. Es mas lento que acks=1, y es lo correcto cuando el evento
+      # representa movimiento de dinero: un acuse prematuro podria perderse si
+      # el broker lider cae antes de replicar.
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        # Sin esta confianza explicita, el deserializador rechaza cualquier tipo
+        # que no provenga de su propio paquete.
+        spring.json.trusted.packages: com.duoc.bancoxyz.eventos
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      # El acuse lo da el codigo, no el reloj: un commit automatico cada N
+      # milisegundos puede confirmar un mensaje que todavia no se proceso.
+      ack-mode: manual_immediate
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # El emisor que declara el token es siempre localhost:9000, porque es
+          # la direccion por la que el navegador del usuario llega al servidor
+          # de autorizacion. Las claves, en cambio, se buscan por la red interna
+          # de contenedores. Separar ambas cosas es lo que evita el desajuste
+          # clasico entre lo que dice el token y donde se valida.
+          issuer-uri: ${ISSUER_URI:http://localhost:9000}
+          jwk-set-uri: ${JWK_SET_URI:http://localhost:9000/oauth2/jwks}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,circuitbreakers,circuitbreakerevents,ratelimiters
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      # Expone el estado de cada circuit breaker dentro del health check, que es
+      # la forma mas directa de evidenciar que el patron esta operando.
+      # No se declaran grupos personalizados: un grupo que incluya un
+      # indicador inexistente -db en los servicios que no tienen base de
+      # datos- impide el arranque, y aqui conviven servicios con y sin
+      # persistencia leyendo este mismo archivo.
+  health:
+    circuitbreakers:
+      enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.duoc.bancoxyz: DEBUG
+    io.github.resilience4j: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{28} - %msg%n"

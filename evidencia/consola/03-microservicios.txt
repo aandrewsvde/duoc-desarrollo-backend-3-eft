@@ -1,0 +1,188 @@
+Banco XYZ - Evidencia de microservicios, eventos y resiliencia
+Generado: 2026-10-11 20:07:10
+
+==================================================================
+1. Descubrimiento: ningun servicio conoce la direccion de otro
+==================================================================
+   SERVICIO                  ESTADO    INSTANCIA
+   API-GATEWAY               UP        api-gateway:172.21.0.16:8080
+   AUTHORIZATION-SERVER      UP        authorization-server:172.21.0.7:9000
+   BFF-CAJERO                UP        bff-cajero:172.21.0.14:8093
+   BFF-MOVIL                 UP        bff-movil:172.21.0.8:8092
+   BFF-WEB                   UP        bff-web:172.21.0.9:8091
+   MS-CLIENTES               UP        ms-clientes:172.21.0.10:8084
+   MS-CUENTAS                UP        ms-cuentas:172.21.0.11:8081
+   MS-NOTIFICACIONES         UP        ms-notificaciones:172.21.0.13:8083
+   MS-PAGOS                  UP        ms-pagos:172.21.0.12:8082
+
+==================================================================
+2. Los tres microservicios del caso, cada uno dueno de su dominio
+==================================================================
+   GET /api/clientes/1             -> 200
+   GET /api/cuentas/146            -> 200
+   GET /api/pagos?limite=1         -> 200
+
+   ms-clientes es el unico dueno de la identidad; ms-cuentas, del saldo;
+   ms-pagos, de las operaciones. Ninguno escribe en la base de otro.
+
+==================================================================
+3. Ciclo de vida de una cuenta (apertura, bloqueo, cierre)
+==================================================================
+$ POST /api/cuentas  {cliente 1, AHORRO, deposito inicial 25000}
+{
+    "numeroCuenta": 1003,
+    "clienteId": 1,
+    "titular": "Alice Brown",
+    "tipoCuenta": "AHORRO",
+    "saldo": 25000.0,
+    "moneda": "CLP",
+    "estado": "ACTIVA",
+    "abiertaEn": "2026-10-11T23:07:10.363697Z",
+    "cerradaEn": null,
+    "actualizadaEn": "2026-10-11T23:07:10.363697Z"
+}
+
+   El titular NO viene en la peticion: lo resuelve ms-cuentas contra
+   ms-clientes. Aceptarlo del canal permitiria abrir una cuenta a nombre
+   de cualquiera.
+
+$ PATCH /api/cuentas/1003/estado  {CERRADA}  -- con saldo 25000
+{
+    "estado": 409,
+    "error": "Operacion no permitida",
+    "mensaje": "No se puede cerrar la cuenta 1003 con saldo 25000.00 CLP: primero hay que dejarla en cero",
+    "instante": "2026-10-11T23:07:10.449846920Z"
+}
+   409 y no 500: es una regla de negocio, no una averia. Cerrar una
+   cuenta con saldo dejaria dinero atrapado.
+
+$ PATCH /api/cuentas/1003/estado  {BLOQUEADA}
+   estado: BLOQUEADA
+
+$ GET /api/cuentas/1003/bitacora
+{
+    "cuenta": 1003,
+    "total": 2,
+    "cambios": [
+        {
+            "id": 156,
+            "cuentaId": 1003,
+            "estadoPrevio": "ACTIVA",
+            "estadoNuevo": "BLOQUEADA",
+            "motivo": "Sospecha de fraude",
+            "solicitadoPor": "canal-web",
+            "ocurridoEn": "2026-10-11T23:07:10.473044Z"
+        },
+        {
+            "id": 155,
+            "cuentaId": 1003,
+            "estadoPrevio": null,
+            "estadoNuevo": "ACTIVA",
+            "motivo": "Apertura de cuenta AHORRO",
+            "solicitadoPor": "canal-web",
+            "ocurridoEn": "2026-10-11T23:07:10.363697Z"
+        }
+    ]
+}
+
+==================================================================
+4. Saga coreografiada por Kafka: desenlace CONFIRMADO
+==================================================================
+   saldo previo de la cuenta 146: 7460.0
+
+$ POST /api/pagos  {RETIRO 2000}
+{
+    "instancia": "ms-pagos:172.21.0.12:8082",
+    "pago": {
+        "id": "PG-D10639D6-A08",
+        "cuentaId": 146,
+        "tipo": "RETIRO",
+        "monto": 2000.0,
+        "moneda": "CLP",
+        "canal": "WEB",
+        "estado": "PENDIENTE",
+        "motivo": null,
+        "saldoAnterior": null,
+        "saldoNuevo": null,
+        "referencia": "EV-OK-22675",
+        "creadoEn": "2026-10-11T23:07:10.574446217Z",
+        "resueltoEn": null
+    },
+    "observacion": "Cuenta verificada en ms-cuentas: saldo 7460.00 CLP",
+    "siguientePaso": "ms-cuentas aplicara el evento y el estado pasara a CONFIRMADA o COMPENSADA"
+}
+
+   Responde 202 y PENDIENTE, no 201: la operacion fue aceptada pero el
+   saldo todavia no cambio. El desenlace llega por evento.
+
+   ...esperando a que la saga se cierre...
+   PAGO                ESTADO       CANAL    SALDO ANT.    SALDO NUEVO
+   PG-D10639D6-A08     CONFIRMADA   WEB      7460.0        5460.0
+   PG-7938D0F5-F3C     CONFIRMADA   WEB      7450.0        7460.0
+
+==================================================================
+5. Saga coreografiada: desenlace COMPENSADO
+==================================================================
+$ POST /api/pagos  {RETIRO 9999999}
+   respuesta: 202
+   PAGO                ESTADO       CANAL    SALDO ANT.    SALDO NUEVO
+   PG-04ECECDA-DCB     COMPENSADA   WEB      None          None
+   PG-D10639D6-A08     CONFIRMADA   WEB      7460.0        5460.0
+
+   El saldo no se toco en ningun momento: ms-cuentas rechazo antes de
+   aplicarlo y ms-pagos compenso con el motivo.
+
+==================================================================
+6. Tres consumidores del mismo evento, sin que el productor lo sepa
+==================================================================
+ms-pagos, ms-clientes y ms-notificaciones escuchan el mismo topico de
+saldo con grupos distintos. Kafka entrega una copia a CADA grupo.
+
+   ms-notificaciones
+   ms-clientes
+   ms-pagos
+   ms-cuentas
+
+   Avisos que genero ms-notificaciones:
+   recibidas desde el arranque: 30
+   [SMS/ALERTA] Banco XYZ: no pudimos completar el pago PG-04ECECDA-DCB sobre su cuenta 146. Motivo: Saldo insuficiente: disponible 5460.00, solicitado 9999999.00.
+   [CORREO/INFORMATIVA] Banco XYZ: se registro un movimiento en su cuenta 146. Saldo anterior 7460.00 CLP, saldo actual 5460.00 CLP. Pago PG-D10639D6-A08.
+   [CORREO/INFORMATIVA] Banco XYZ: se registro un movimiento en su cuenta 146. Saldo anterior 7450.00 CLP, saldo actual 7460.00 CLP. Pago PG-7938D0F5-F3C.
+
+   Segmento comercial que recalculo ms-clientes al enterarse:
+   cliente 1: PREFERENTE con saldo consolidado 60367.5
+
+==================================================================
+7. Mensajes reales en los topicos
+==================================================================
+--- banco.pagos.registrados ---
+   {"eventoId":"55b686f3-86b7-42cf-9455-bd9e57153123","pagoId":"PG-04DD7CAD-1B7","cuentaId":146,"tipo":"RETIRO","monto":2000.00,"moneda":"CLP","canal":"WEB","ocurridoEn":"2026-10-11T23:00:24.033341449Z"}
+   {"eventoId":"4567eb3d-6d0c-4cea-913c-3521b643f90d","pagoId":"PG-A28C498C-3D2","cuentaId":146,"tipo":"RETIRO","monto":9999999.00,"moneda":"CLP","canal":"WEB","ocurridoEn":"2026-10-11T23:00:28.384803059Z"}
+
+--- banco.cuentas.saldo-actualizado ---
+   {"eventoId":"3fd7846c-b334-4412-94c0-fa0655993a45","pagoId":"PG-04DD7CAD-1B7","cuentaId":146,"saldoAnterior":8220.00,"saldoNuevo":6220.00,"moneda":"CLP","ocurridoEn":"2026-10-11T23:00:24.353304091Z"}
+   {"eventoId":"ebfa1466-8202-4677-ad8c-454efa5c3c8d","pagoId":"PG-94693EB5-886","cuentaId":146,"saldoAnterior":6220.00,"saldoNuevo":6720.00,"moneda":"CLP","ocurridoEn":"2026-10-11T23:00:55.593855422Z"}
+
+--- banco.pagos.rechazados ---
+   {"eventoId":"d2220c08-1710-4872-9206-a0f4080f3990","pagoId":"PG-A28C498C-3D2","cuentaId":146,"motivo":"Saldo insuficiente: disponible 6220.00, solicitado 9999999.00","ocurridoEn":"2026-10-11T23:00:28.394550283Z"}
+   {"eventoId":"c1544c7a-db0b-4142-beb1-771f90cd7980","pagoId":"PG-04ECECDA-DCB","cuentaId":146,"motivo":"Saldo insuficiente: disponible 5460.00, solicitado 9999999.00","ocurridoEn":"2026-10-11T23:07:14.655831467Z"}
+
+
+==================================================================
+8. Idempotencia: reenviar la misma orden no duplica el cargo
+==================================================================
+$ POST /api/pagos  dos veces con la referencia EV-IDEM-10531
+   intento: id=PG-D3F42FA1-61A ms-cuentas aplicara el evento y el estado pasara a CONFIRMADA o COMPENSADA
+   intento: id=PG-D3F42FA1-61A Sin accion: la referencia ya estaba registrada
+
+   Es la MISMA operacion: el segundo intento devuelve la original.
+
+==================================================================
+9. Resiliencia: estado inicial de los cortocircuitos
+==================================================================
+   cuentas    estado=CLOSED     tasa=0.0%          ventana=5 fallidas=0 exitosas=5 rechazadas=0
+   clientes   estado=CLOSED     tasa=sin evaluar   ventana=3 fallidas=1 exitosas=2 rechazadas=0
+
+==================================================================
+Fin de la evidencia de microservicios
+==================================================================

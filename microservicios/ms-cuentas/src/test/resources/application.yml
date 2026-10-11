@@ -1,0 +1,111 @@
+# Configuracion exclusiva de las pruebas.
+#
+# No consulta al config-server ni se registra en Eureka: una prueba que
+# dependiera de infraestructura externa dejaria de verificar el codigo y
+# pasaria a fallar por motivos ajenos a lo que se quiere comprobar.
+spring:
+  cloud:
+    config:
+      # Sin esto, el cliente de configuracion exige un spring.config.import y
+      # aborta el arranque antes de leer nada mas. Desactivarlo es lo que
+      # permite que la prueba no dependa de que el config-server este en pie.
+      enabled: false
+  config:
+    import: ""
+  datasource:
+    # H2 en modo PostgreSQL: respeta la sintaxis del motor real, de modo que
+    # las mismas sentencias que en produccion se ejecutan aqui.
+    url: jdbc:h2:mem:cuentas;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      # El MISMO esquema que produccion, no una copia: una copia se
+      # desincroniza en silencio y las pruebas acaban validando una
+      # estructura que ya no existe. No se carga la semilla porque cada
+      # prueba inserta los datos que necesita.
+      schema-locations: classpath:db/esquema.sql
+  kafka:
+    bootstrap-servers: localhost:59092
+    consumer:
+      # El grupo se define en el config-server, que aqui no se consulta. La
+      # anotacion @KafkaListener lo exige igualmente para poder construirse,
+      # aunque el consumidor no llegue a arrancar.
+      group-id: ms-cuentas-pruebas
+    listener:
+      # Los consumidores no arrancan: estas pruebas verifican la logica de
+      # aplicacion, no el transporte. Dejarlos activos solo llenaria la salida
+      # de reintentos contra un broker que no existe.
+      auto-startup: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Valor sintetico: no se emite ni valida ningun token en estas
+          # pruebas, pero la propiedad debe existir para que la configuracion
+          # del servidor de recursos se pueda construir.
+          jwk-set-uri: http://localhost:59000/oauth2/jwks
+
+server:
+  # No hay servidor web en estas pruebas, pero la propiedad debe existir
+  # porque los controladores la inyectan para identificar su instancia.
+  port: 8081
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+banco:
+  moneda: CLP
+  servicio-clientes: ms-clientes
+  oauth:
+    # Valores sinteticos: en estas pruebas el proveedor de token se sustituye
+    # por un doble, de modo que nunca se llega a pedir nada.
+    token-uri: http://localhost:59000/oauth2/token
+    client-id: pruebas
+    client-secret: pruebas
+    scopes: clientes.leer
+  simulacion:
+    habilitada: false
+
+# Los valores que en ejecucion entrega el config-server. Se repiten aqui
+# porque la configuracion de Resilience4j es parte de lo que se verifica: con
+# los valores por defecto de la libreria se estaria comprobando otra cosa.
+resilience4j:
+  circuitbreaker:
+    instances:
+      clientes:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: false
+        register-health-indicator: true
+        record-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClientesNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClienteNoExisteException
+  retry:
+    instances:
+      clientes:
+        max-attempts: 3
+        wait-duration: 50ms
+        retry-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClientesNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.cuentas.cliente.ClienteNoExisteException
+  bulkhead:
+    instances:
+      clientes: {max-concurrent-calls: 10, max-wait-duration: 100ms}
+  ratelimiter:
+    instances:
+      clientes: {limit-for-period: 50, limit-refresh-period: 1s, timeout-duration: 200ms}
+  timelimiter:
+    instances:
+      clientes: {timeout-duration: 1s, cancel-running-future: true}

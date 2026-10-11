@@ -1,0 +1,29 @@
+# BFF Movil: canal de aplicacion en telefono.
+#
+# Su objetivo es el OPUESTO al del canal web: entregar lo minimo. En una red
+# movil cada byte cuesta bateria y tiempo, de modo que aqui se abrevia el
+# nombre del titular, se redondean los importes a entero y los tipos viajan
+# como una sola letra. El mismo dato del core, otra forma.
+server:
+  port: ${SERVER_PORT:8092}
+
+spring:
+  kafka:
+    consumer:
+      group-id: bff-movil
+
+banco:
+  canal: MOVIL
+  servicio-clientes: ms-clientes
+  servicio-cuentas: ms-cuentas
+  servicio-pagos: ms-pagos
+  oauth:
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:9000/oauth2/token}
+    client-id: ${OAUTH_CLIENT_ID:canal-movil}
+    client-secret: ${OAUTH_CLIENT_SECRET:canal-movil-secreto-2026}
+    # El movil NO pide pagos.escribir: la aplicacion muestra saldos y
+    # movimientos, y cualquier operacion que mueva dinero pasa por el canal web
+    # o por el cajero. Un alcance que no se concede no se puede abusar.
+    scopes: clientes.leer cuentas.leer pagos.leer
+  presentacion:
+    movimientos-por-cuenta: 3

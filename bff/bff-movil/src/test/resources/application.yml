@@ -1,0 +1,29 @@
+# Configuracion exclusiva de las pruebas del canal movil.
+spring:
+  cloud:
+    config:
+      enabled: false
+  config:
+    import: ""
+
+server:
+  port: 8092
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+banco:
+  canal: MOVIL
+  servicio-clientes: ms-clientes
+  servicio-cuentas: ms-cuentas
+  servicio-pagos: ms-pagos
+  oauth:
+    token-uri: http://localhost:59000/oauth2/token
+    client-id: pruebas
+    client-secret: pruebas
+    scopes: clientes.leer
+  presentacion:
+    movimientos-por-cuenta: 3

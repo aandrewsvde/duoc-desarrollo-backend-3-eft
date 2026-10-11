@@ -1,0 +1,168 @@
+Banco XYZ - Evidencia de resiliencia
+Generado: 2026-10-11 20:05:20
+
+==================================================================
+0. Configuracion vigente, entregada por el config-server
+==================================================================
+   resilience4j.bulkhead.configs.porDefecto.max-concurrent-calls = 10
+   resilience4j.bulkhead.configs.porDefecto.max-wait-duration = 100ms
+   resilience4j.bulkhead.instances.clientes.base-config = porDefecto
+   resilience4j.bulkhead.instances.cuentas.base-config = porDefecto
+   resilience4j.circuitbreaker.configs.porDefecto.automatic-transition-from-open-to-half-open-enabled = True
+   resilience4j.circuitbreaker.configs.porDefecto.failure-rate-threshold = 50
+   resilience4j.circuitbreaker.configs.porDefecto.ignore-exceptions[0] = com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+   resilience4j.circuitbreaker.configs.porDefecto.minimum-number-of-calls = 5
+   resilience4j.circuitbreaker.configs.porDefecto.permitted-number-of-calls-in-half-open-state = 3
+   resilience4j.circuitbreaker.configs.porDefecto.record-exceptions[0] = java.io.IOException
+   resilience4j.circuitbreaker.configs.porDefecto.record-exceptions[1] = java.util.concurrent.TimeoutException
+   resilience4j.circuitbreaker.configs.porDefecto.record-exceptions[2] = org.springframework.web.client.ResourceAccessException
+   resilience4j.circuitbreaker.configs.porDefecto.record-exceptions[3] = org.springframework.web.client.HttpServerErrorException
+   resilience4j.circuitbreaker.configs.porDefecto.record-exceptions[4] = com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+   resilience4j.circuitbreaker.configs.porDefecto.register-health-indicator = True
+   resilience4j.circuitbreaker.configs.porDefecto.sliding-window-size = 10
+   resilience4j.circuitbreaker.configs.porDefecto.sliding-window-type = COUNT_BASED
+   resilience4j.circuitbreaker.configs.porDefecto.wait-duration-in-open-state = 10s
+   resilience4j.circuitbreaker.instances.clientes.base-config = porDefecto
+   resilience4j.circuitbreaker.instances.cuentas.base-config = porDefecto
+   resilience4j.ratelimiter.configs.porDefecto.limit-for-period = 50
+   resilience4j.ratelimiter.configs.porDefecto.limit-refresh-period = 1s
+   resilience4j.ratelimiter.configs.porDefecto.timeout-duration = 200ms
+   resilience4j.ratelimiter.instances.clientes.base-config = porDefecto
+   resilience4j.ratelimiter.instances.cuentas.base-config = porDefecto
+   resilience4j.retry.configs.porDefecto.enable-exponential-backoff = True
+   resilience4j.retry.configs.porDefecto.exponential-backoff-multiplier = 2
+   resilience4j.retry.configs.porDefecto.ignore-exceptions[0] = com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+   resilience4j.retry.configs.porDefecto.max-attempts = 3
+   resilience4j.retry.configs.porDefecto.retry-exceptions[0] = org.springframework.web.client.ResourceAccessException
+   resilience4j.retry.configs.porDefecto.retry-exceptions[1] = com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+   resilience4j.retry.configs.porDefecto.wait-duration = 300ms
+   resilience4j.retry.instances.clientes.base-config = porDefecto
+   resilience4j.retry.instances.cuentas.base-config = porDefecto
+   resilience4j.timelimiter.configs.porDefecto.cancel-running-future = True
+   resilience4j.timelimiter.configs.porDefecto.timeout-duration = 3s
+   resilience4j.timelimiter.instances.clientes.base-config = porDefecto
+   resilience4j.timelimiter.instances.cuentas.base-config = porDefecto
+
+==================================================================
+1. Punto de partida: ms-cuentas sano
+==================================================================
+   cuentas    estado=CLOSED     tasa=sin evaluar   ventana=1 fallidas=0 exitosas=1 rechazadas=0
+       40 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7340.00 CLP
+   La cuenta se verifica contra ms-cuentas y la respuesta es inmediata.
+
+==================================================================
+2. DEGRADACION: ms-cuentas responde, pero en 4 segundos
+==================================================================
+El limite del TimeLimiter es de 3 s. Sin el, la peticion esperaria los 4 s
+completos y, con suficiente trafico, los hilos del servicio se agotarian.
+
+     3033 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (TimeoutException: TimeLimiter 'cuentas' recorded a timeout exception.). El pago se
+
+   Corto antes de los 4 s y el respaldo dejo seguir el pago. No invento un
+   saldo: lo marco como no verificado, y quien decide de verdad es
+   ms-cuentas cuando aplique el evento.
+
+==================================================================
+3. El cortocircuito se abre con los fallos sostenidos
+==================================================================
+     3032 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (TimeoutException: TimeLimiter 'cuentas' recorded a timeout exception.). El pago se
+   cuentas    estado=CLOSED     tasa=sin evaluar   ventana=4 fallidas=2 exitosas=2 rechazadas=0
+     3035 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (TimeoutException: TimeLimiter 'cuentas' recorded a timeout exception.). El pago se
+   cuentas    estado=OPEN       tasa=60.0%         ventana=5 fallidas=3 exitosas=2 rechazadas=0
+       25 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (CallNotPermittedException: CircuitBreaker 'cuentas' is OPEN and does not permit fu
+   cuentas    estado=OPEN       tasa=60.0%         ventana=5 fallidas=3 exitosas=2 rechazadas=1
+       28 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (CallNotPermittedException: CircuitBreaker 'cuentas' is OPEN and does not permit fu
+   cuentas    estado=OPEN       tasa=60.0%         ventana=5 fallidas=3 exitosas=2 rechazadas=2
+
+==================================================================
+4. Con el cortocircuito ABIERTO la llamada ni siquiera viaja
+==================================================================
+       27 ms | estado=PENDIENTE | No se pudo verificar la cuenta 146 (CallNotPermittedException: CircuitBreaker 'cuentas' is OPEN and does not permit fu
+   cuentas    estado=OPEN       tasa=60.0%         ventana=5 fallidas=3 exitosas=2 rechazadas=3
+
+   Se responde con el respaldo en milisegundos en vez de esperar un
+   timeout que ya se sabe que va a ocurrir. Eso es lo que impide que la
+   lentitud de una dependencia se propague a quien la consume.
+
+   Nota: el cortocircuito pasa solo a SEMIABIERTO cada 10 s para probar si
+   el otro servicio se recupero. Si una medicion sale lenta, es una de
+   esas llamadas de prueba, y al fallar vuelve a abrirse.
+
+==================================================================
+5. Recuperacion automatica: ABIERTO -> SEMIABIERTO -> CERRADO
+==================================================================
+   latencia retirada; esperando la ventana de 10 s...
+   cuentas    estado=HALF_OPEN  tasa=sin evaluar   ventana=0 fallidas=0 exitosas=0 rechazadas=0
+
+   Llamadas de prueba en estado SEMIABIERTO:
+       36 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7410.00 CLP
+   cuentas    estado=HALF_OPEN  tasa=sin evaluar   ventana=1 fallidas=0 exitosas=1 rechazadas=0
+       32 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7420.00 CLP
+   cuentas    estado=HALF_OPEN  tasa=sin evaluar   ventana=2 fallidas=0 exitosas=2 rechazadas=0
+       35 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7430.00 CLP
+   cuentas    estado=CLOSED     tasa=sin evaluar   ventana=0 fallidas=0 exitosas=0 rechazadas=0
+       33 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7440.00 CLP
+   cuentas    estado=CLOSED     tasa=sin evaluar   ventana=1 fallidas=0 exitosas=1 rechazadas=0
+
+   El cortocircuito se cerro solo. Nadie intervino.
+
+==================================================================
+6. Dos politicas de respaldo opuestas, cada una justificada
+==================================================================
+ms-pagos ante un fallo de ms-cuentas DEGRADA y acepta: el evento se
+resolvera cuando el servicio vuelva.
+ms-cuentas ante un fallo de ms-clientes RECHAZA: abrir una cuenta a
+nombre de alguien que no se pudo verificar crea un registro incorrecto
+que luego hay que deshacer a mano.
+
+   Se detiene ms-clientes para comprobarlo...
+
+   $ POST /api/cuentas  con ms-clientes caido
+{
+    "estado": 503,
+    "error": "Verificacion no disponible",
+    "mensaje": "No se pudo verificar el cliente 1 (TimeoutException). La apertura no se realizo; reintente cuando ms-clientes vuelva a responder.",
+    "instante": "2026-10-11T23:05:54.097733102Z"
+}
+
+   $ POST /api/pagos  con ms-clientes caido (no es su dependencia)
+       38 ms | estado=PENDIENTE | Cuenta verificada en ms-cuentas: saldo 7450.00 CLP
+
+   clientes   estado=CLOSED     tasa=sin evaluar   ventana=1 fallidas=1 exitosas=0 rechazadas=0
+
+==================================================================
+7. Recuperacion de ms-clientes
+==================================================================
+   ms-clientes levantado; esperando a que quede sano...
+   estado de ms-clientes: UP
+   esperando a que vuelva a figurar en Eureka...
+   registrado de nuevo
+
+   $ POST /api/cuentas  con ms-clientes restablecido
+   cuenta 1002 abierta para Alice Brown
+
+==================================================================
+8. Metricas y bitacora del cortocircuito
+==================================================================
+   cuentas    estado=CLOSED     tasa=sin evaluar   ventana=2 fallidas=0 exitosas=2 rechazadas=0
+   clientes   estado=CLOSED     tasa=sin evaluar   ventana=2 fallidas=1 exitosas=1 rechazadas=0
+
+   Ultimos eventos registrados:
+   20:05:28.606  ERROR                    java.util.concurrent.TimeoutException: TimeLimiter 'cuentas' recorded 
+   20:05:31.681  ERROR                    java.util.concurrent.TimeoutException: TimeLimiter 'cuentas' recorded 
+   20:05:31.682  FAILURE_RATE_EXCEEDED    
+   20:05:31.686  STATE_TRANSITION         CLOSED_TO_OPEN
+   20:05:31.768  NOT_PERMITTED            
+   20:05:31.837  NOT_PERMITTED            
+   20:05:31.905  NOT_PERMITTED            
+   20:05:41.688  STATE_TRANSITION         OPEN_TO_HALF_OPEN
+   20:05:44.022  SUCCESS                  
+   20:05:44.096  SUCCESS                  
+   20:05:44.171  SUCCESS                  
+   20:05:44.171  STATE_TRANSITION         HALF_OPEN_TO_CLOSED
+   20:05:44.250  SUCCESS                  
+   20:05:54.138  SUCCESS                  
+
+==================================================================
+Fin de la evidencia de resiliencia
+==================================================================

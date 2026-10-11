@@ -1,0 +1,208 @@
+Banco XYZ - Evidencia de la migracion batch
+Generado: 2026-10-11 20:00:01
+
+==================================================================
+0. Los datos de entrada y sus defectos
+==================================================================
+Origen: https://github.com/KariVillagran/fin_legacy_data (data/semana_3)
+
+   movimientos_financieros_diarios.csv  1000 filas
+   intereses_trimestrales.csv           1000 filas
+   estados_financieros_anuales.csv      1000 filas
+
+   Primeras filas de movimientos_financieros_diarios.csv:
+      id,fecha,monto,tipo
+      1,2024/03/05,1500,invalido
+      2,11-12-2024,1000,credito
+      3,02/04/2024,-200,debito
+
+   Se ven de un vistazo tres de los defectos: fechas en formatos distintos,
+   montos negativos o vacios y tipos fuera de catalogo ('invalido').
+
+==================================================================
+1. Configuracion del proceso, entregada por el config-server
+==================================================================
+   banco.intereses.tasa-ahorro = 0.015
+   banco.intereses.tasa-hipoteca = 0.0275
+   banco.intereses.tasa-prestamo = 0.0325
+   banco.migracion.destino.clientes-url = ${DB_CLIENTES_URL:jdbc:postgresql://localhost:5436/bancoxyz_clientes}
+   banco.migracion.destino.cuentas-url = ${DB_CUENTAS_URL:jdbc:postgresql://localhost:5436/bancoxyz_cuentas}
+   banco.migracion.destino.pagos-url = ${DB_PAGOS_URL:jdbc:postgresql://localhost:5436/bancoxyz_pagos}
+   banco.migracion.origen = ${ORIGEN_DATOS:/datos/legacy}
+   banco.migracion.particiones = ${PARTICIONES:8}
+   banco.migracion.salida = ${SALIDA_INFORMES:/datos/salida}
+   banco.migracion.semana = ${SEMANA_DATOS:semana_3}
+   banco.migracion.tamano-fragmento = ${TAMANO_FRAGMENTO:250}
+   banco.migracion.umbral-preferente = 50000
+
+==================================================================
+2. Los tres jobs
+==================================================================
+Se lanzan en orden: intereses crea las cuentas, y tanto los movimientos
+anuales como las transacciones diarias las referencian.
+
+   resultado: COMPLETADA
+
+   JOB intereses -> COMPLETED
+      preparacionInteresesStep           leidos=0      escritos=0      omitidos=0      COMPLETED
+      cargaInteresesStep                 leidos=829    escritos=397    omitidos=603    COMPLETED
+      deduplicacionInteresesStep         leidos=0      escritos=1      omitidos=0      COMPLETED
+      resumenInteresesStep               leidos=0      escritos=3      omitidos=0      COMPLETED
+      migracionClientesYCuentasStep      leidos=0      escritos=57     omitidos=0      COMPLETED
+
+   JOB estados -> COMPLETED
+      preparacionEstadosCuentaStep       leidos=0      escritos=0      omitidos=0      COMPLETED
+      cargaMovimientosAnualesStep        leidos=1000   escritos=604    omitidos=396    COMPLETED
+      compilacionEstadosStep             leidos=0      escritos=20     omitidos=0      COMPLETED
+      informeAuditoriaStep               leidos=20     escritos=20     omitidos=0      COMPLETED
+      migracionMovimientosStep           leidos=0      escritos=604    omitidos=0      COMPLETED
+
+   JOB transacciones -> COMPLETED
+      preparacionTransaccionesStep       leidos=0      escritos=0      omitidos=0      COMPLETED
+      cargaTransaccionesStep             leidos=1000   escritos=392    omitidos=608    COMPLETED
+      deteccionAnomaliasStep             leidos=0      escritos=93     omitidos=0      COMPLETED
+      resumenDiarioStep                  leidos=0      escritos=239    omitidos=0      COMPLETED
+      informeTransaccionesStep           leidos=239    escritos=239    omitidos=0      COMPLETED
+      migracionPagosStep                 leidos=0      escritos=392    omitidos=0      COMPLETED
+
+==================================================================
+3. Que significa cada cifra
+==================================================================
+   leidos    filas que el lector entrego al procesador. Es menor que el total
+             del archivo porque las que ni siquiera se pueden parsear se
+             omiten en la lectura.
+   escritos  filas que superaron todas las validaciones y llegaron a la base.
+   omitidos  filas descartadas por la politica de omision, con su motivo
+             anotado en la tabla de cuarentena y en un CSV de rechazos.
+
+   Que se omita mas de la mitad NO es un fallo: es exactamente lo que el
+   enunciado describe cuando dice que los archivos traen errores
+   intencionales. Lo que si seria un fallo es que el proceso se detuviera en
+   la primera fila mala, o que las dejara entrar sin avisar.
+
+==================================================================
+4. Particionado: el paralelismo del step de carga
+==================================================================
+Cada job divide su archivo en rangos y los procesa en hilos distintos.
+Estas son las particiones del ultimo job ejecutado:
+
+   reporteTransaccionesDiariasJob     COMPLETED    COMPLETED
+   estadosCuentaAnualesJob            COMPLETED    COMPLETED
+   calculoInteresesMensualesJob       COMPLETED    COMPLETED
+
+                   step_name                |  status   | read_count | write_count | omitidos 
+   -----------------------------------------+-----------+------------+-------------+----------
+    cargaTransaccionesWorkerStep:particion6 | COMPLETED |        125 |          47 |       78
+    cargaTransaccionesWorkerStep:particion7 | COMPLETED |        125 |          52 |       73
+    cargaTransaccionesWorkerStep:particion3 | COMPLETED |        125 |          52 |       73
+    cargaTransaccionesWorkerStep:particion4 | COMPLETED |        125 |          41 |       84
+    cargaTransaccionesWorkerStep:particion2 | COMPLETED |        125 |          53 |       72
+    cargaTransaccionesWorkerStep:particion0 | COMPLETED |        125 |          48 |       77
+    cargaTransaccionesWorkerStep:particion1 | COMPLETED |        125 |          51 |       74
+    cargaTransaccionesWorkerStep:particion5 | COMPLETED |        125 |          48 |       77
+   (8 rows)
+   
+
+==================================================================
+5. Tolerancia a fallos: los registros rechazados y su motivo
+==================================================================
+                 job               |  fase   |                             motivo                             | cuantos 
+   --------------------------------+---------+----------------------------------------------------------------+---------
+    reporteTransaccionesDiariasJob | PROCESO | Tipo de transaccion fuera de catalogo ('invalido'); admitidos: |     211
+    calculoInteresesMensualesJob   | PROCESO | Tipo de cuenta fuera de catalogo ('-1'); admitidos: ahorro, pr |     171
+    reporteTransaccionesDiariasJob | PROCESO | Monto ausente: la transaccion no puede valorizarse             |     168
+    calculoInteresesMensualesJob   | PROCESO | Saldo ausente: no es posible calcular intereses                |     165
+    estadosCuentaAnualesJob        | PROCESO | Monto no positivo (0): el signo lo define el tipo de operacion |     116
+    estadosCuentaAnualesJob        | PROCESO | Monto no positivo (-500): el signo lo define el tipo de operac |     112
+    estadosCuentaAnualesJob        | PROCESO | Monto no positivo (-100): el signo lo define el tipo de operac |     109
+    reporteTransaccionesDiariasJob | PROCESO | Monto no positivo (-200): el importe debe ser mayor que 0      |      97
+    reporteTransaccionesDiariasJob | PROCESO | Tipo de transaccion fuera de catalogo ('desconocido'); admitid |      55
+    estadosCuentaAnualesJob        | PROCESO | Monto ausente: el movimiento no puede valorizarse              |      48
+    calculoInteresesMensualesJob   | PROCESO | Edad fuera de rango (150); admitido: 18-100                    |      42
+    reporteTransaccionesDiariasJob | PROCESO | Fecha invalida ('2024-13-01'); formatos admitidos: yyyy-MM-dd  |      29
+    calculoInteresesMensualesJob   | PROCESO | Tipo de cuenta fuera de catalogo ('unknown'); admitidos: ahorr |      29
+    reporteTransaccionesDiariasJob | PROCESO | Monto no positivo (-100): el importe debe ser mayor que 0      |      28
+   (14 rows)
+   
+
+==================================================================
+6. Resultado en las bases de los microservicios
+==================================================================
+El ultimo paso de cada job carga lo ya saneado en la base del
+microservicio que corresponde. Es el unico momento en que el batch
+escribe en ellas.
+
+--- ms-clientes ---
+    id |    nombre     | edad |  segmento  | saldo_total 
+   ----+---------------+------+------------+-------------
+     5 | Jane Smith    |   25 | PREFERENTE |    96170.00
+     1 | Alice Brown   |   40 | PREFERENTE |    79847.50
+     6 | John Doe      |   45 | PREFERENTE |    64522.50
+     4 | Diana Prince  |   25 | PREFERENTE |    59677.50
+     7 | Steve Rogers  |   25 | ESTANDAR   |    42125.00
+     3 | Charlie Green |   45 | ESTANDAR   |    36930.00
+     2 | Bob Johnson   |   40 | ESTANDAR   |    25375.00
+   (7 rows)
+   
+--- ms-cuentas ---
+    cuentas | movimientos | bitacora 
+   ---------+-------------+----------
+         50 |         604 |       50
+   (1 row)
+   
+--- ms-pagos ---
+      estado   | canal | count 
+   ------------+-------+-------
+    CONFIRMADA | WEB   |   392
+   (1 row)
+   
+
+==================================================================
+7. Informes generados
+==================================================================
+Quedan en datos/salida/, montado como volumen para poder revisarlos sin
+entrar al contenedor.
+
+   estados_cuenta_anuales_2.txt                         3,4K
+   estados_cuenta_anuales_5.txt                         3,4K
+   reporte_transacciones_diarias_3.csv                  17K
+   reporte_transacciones_diarias_6.csv                  17K
+
+   --- estados_cuenta_anuales_2.txt (primeras lineas) ---
+      ==========================================================================================================
+        BANCO XYZ - INFORME ANUAL DE ESTADOS DE CUENTA PARA AUDITORIA
+        Ejercicio: 2024
+        Generado: 2026-10-11 19:58:07
+        JobExecutionId: 2
+        Origen: estados_financieros_anuales.csv (sistema legacy Banco XYZ)
+      ==========================================================================================================
+      CUENTA   ANIO     MOVS    DEP    RET    COM    PAG         ABONOS         CARGOS     SALDO NETO        DESDE        HASTA
+      ----------------------------------------------------------------------------------------------------------
+      101      2024       37     12     10     14      1       20000.00       51500.00      -31500.00   2024-02-01   2024-12-19
+      102      2024       24      3      4     13      4        4000.00       40500.00      -36500.00   2024-01-07   2024-12-20
+      103      2024       37     16      8     12      1       31000.00       42000.00      -11000.00   2024-01-09   2024-12-24
+      104      2024       30      4      5     19      2        8500.00       55000.00      -46500.00   2024-01-09   2024-12-10
+      105      2024       24      8      6      9      1       15500.00       30500.00      -15000.00   2024-01-07   2024-12-28
+
+==================================================================
+8. Reejecucion: la migracion es repetible
+==================================================================
+Se puede relanzar entera y deja exactamente el mismo resultado. Es
+deliberado: un proceso de migracion que acumulara sobre lo anterior
+dejaria cuentas y movimientos duplicados al reintentar tras un fallo.
+
+Se relanza la migracion COMPLETA y no un job suelto. El motivo es una
+dependencia real entre los tres: el job de intereses vacia las tablas de
+destino antes de cargarlas, de modo que ejecutarlo solo borraria los
+movimientos que cargo el job de estados. Es la misma razon por la que
+existe el endpoint /migracion-completa en lugar de dejarlo a la mano.
+
+   antes:    clientes=7 cuentas=50 movimientos=604 pagos=392
+   segunda ejecucion: COMPLETADA
+   despues:  clientes=7 cuentas=50 movimientos=604 pagos=392
+
+   Las cuatro cifras coinciden: la migracion es idempotente.
+
+==================================================================
+Fin de la evidencia de migracion
+==================================================================

@@ -1,0 +1,59 @@
+# Gateway: unica puerta de entrada al ecosistema.
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          # No se habilita el enrutamiento automatico por nombre de servicio:
+          # expondria cualquier servicio registrado en Eureka, incluidos los de
+          # infraestructura. Las rutas se declaran una por una para que la
+          # superficie publica sea una decision y no un efecto lateral del
+          # descubrimiento.
+          enabled: false
+      routes:
+        # --- Canales: lo que consume un frontend ---
+        - id: bff-web
+          # lb:// delega en Eureka: el gateway no conoce la direccion del BFF,
+          # pide el nombre y balancea entre las instancias vivas. Es lo que
+          # hace que "docker compose up --scale" funcione sin tocar nada aqui.
+          uri: lb://bff-web
+          predicates:
+            - Path=/canal/web/**
+        - id: bff-movil
+          uri: lb://bff-movil
+          predicates:
+            - Path=/canal/movil/**
+        - id: bff-cajero
+          uri: lb://bff-cajero
+          predicates:
+            - Path=/canal/cajero/**
+
+        # --- Microservicios: lo que consume otro servicio o un operador ---
+        - id: clientes
+          uri: lb://ms-clientes
+          predicates:
+            - Path=/api/clientes/**
+        - id: cuentas
+          uri: lb://ms-cuentas
+          predicates:
+            - Path=/api/cuentas/**
+        - id: pagos
+          uri: lb://ms-pagos
+          predicates:
+            - Path=/api/pagos/**
+        - id: notificaciones
+          uri: lb://ms-notificaciones
+          predicates:
+            - Path=/api/notificaciones/**
+
+        # Palanca de simulacion de ms-cuentas. Se enruta por el gateway y no
+        # por el puerto del contenedor para que siga funcionando cuando el
+        # servicio tiene varias replicas; con escalado horizontal, el puerto
+        # fijo del anfitrion desaparece.
+        - id: simulacion
+          uri: lb://ms-cuentas
+          predicates:
+            - Path=/api/simulacion/**

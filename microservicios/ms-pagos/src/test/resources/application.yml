@@ -1,0 +1,105 @@
+# Configuracion exclusiva de las pruebas de ms-pagos.
+#
+# Reproduce los valores que en ejecucion entrega el config-server, porque
+# la configuracion de Resilience4j es justamente lo que varias de estas
+# pruebas verifican: si se dejaran los valores por defecto de la libreria,
+# se estaria comprobando otra cosa distinta de la que se despliega.
+spring:
+  main:
+    # Permite que una prueba sustituya un bean de produccion por el suyo. Esta
+    # acotado al classpath de pruebas: la aplicacion real conserva el valor por
+    # defecto, que rechaza las definiciones duplicadas.
+    allow-bean-definition-overriding: true
+  cloud:
+    config:
+      enabled: false
+  config:
+    import: ""
+  datasource:
+    url: jdbc:h2:mem:pagos;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/esquema.sql
+  kafka:
+    bootstrap-servers: localhost:59092
+    consumer:
+      group-id: ms-pagos-pruebas
+    listener:
+      auto-startup: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:59000/oauth2/jwks
+
+server:
+  port: 8082
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+banco:
+  moneda: CLP
+  servicio-cuentas: ms-cuentas
+  oauth:
+    token-uri: http://localhost:59000/oauth2/token
+    client-id: banco-servicios
+    client-secret: secreto-de-prueba
+    scopes: cuentas.leer
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      cuentas:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        # Desactivada en pruebas: con la transicion automatica, el estado
+        # ABIERTO cambiaria solo durante la verificacion y el resultado
+        # dependeria del reloj en vez del comportamiento.
+        automatic-transition-from-open-to-half-open-enabled: false
+        register-health-indicator: true
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+          - com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+  retry:
+    instances:
+      cuentas:
+        max-attempts: 3
+        wait-duration: 50ms
+        retry-exceptions:
+          - org.springframework.web.client.ResourceAccessException
+          - com.duoc.bancoxyz.pagos.cliente.ServicioNoDisponibleException
+        ignore-exceptions:
+          - com.duoc.bancoxyz.pagos.cliente.RecursoNoExisteException
+  bulkhead:
+    instances:
+      cuentas:
+        max-concurrent-calls: 10
+        max-wait-duration: 100ms
+  ratelimiter:
+    instances:
+      cuentas:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 200ms
+  timelimiter:
+    instances:
+      cuentas:
+        timeout-duration: 1s
+        cancel-running-future: true

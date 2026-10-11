@@ -1,0 +1,142 @@
+Banco XYZ - Evidencia de escalado horizontal
+Generado: 2026-10-11 19:58:13
+
+==================================================================
+1. Imagenes construidas: una por servicio
+==================================================================
+Cada microservicio tiene su propia imagen con su propio jar. La de
+bff-movil no contiene el codigo de ms-cuentas, que es la independencia
+de despliegue que se busca.
+
+   REPOSITORY                      TAG       SIZE
+   bancoxyz/eureka-server          1.0.0     574MB
+   bancoxyz/batch-financiero       1.0.0     537MB
+   bancoxyz/ms-clientes            1.0.0     621MB
+   bancoxyz/bff-movil              1.0.0     577MB
+   bancoxyz/bff-web                1.0.0     577MB
+   bancoxyz/authorization-server   1.0.0     571MB
+   bancoxyz/ms-pagos               1.0.0     627MB
+   bancoxyz/api-gateway            1.0.0     573MB
+   bancoxyz/ms-notificaciones      1.0.0     615MB
+   bancoxyz/bff-cajero             1.0.0     577MB
+   bancoxyz/ms-cuentas             1.0.0     627MB
+   bancoxyz/config-server          1.0.0     548MB
+   bancoxyz/ms-transacciones       1.0.0     627MB
+
+   El tamano que informa Docker cuenta las capas compartidas una vez por
+   imagen. Las doce parten de la MISMA etapa base, de modo que en disco
+   hay una base y doce jar, no doce bases. Es tambien lo que hace que
+   desplegar un servicio descargue decenas de megas y no cientos.
+
+==================================================================
+2. Antes de escalar: una instancia de cada uno
+==================================================================
+   SERVICIO                  ESTADO    INSTANCIA
+   API-GATEWAY               UP        api-gateway:172.21.0.16:8080
+   AUTHORIZATION-SERVER      UP        authorization-server:172.21.0.7:9000
+   BFF-CAJERO                UP        bff-cajero:172.21.0.14:8093
+   BFF-MOVIL                 UP        bff-movil:172.21.0.8:8092
+   BFF-WEB                   UP        bff-web:172.21.0.9:8091
+   MS-CLIENTES               UP        ms-clientes:172.21.0.11:8084
+   MS-CUENTAS                UP        ms-cuentas:172.21.0.12:8081
+   MS-NOTIFICACIONES         UP        ms-notificaciones:172.21.0.13:8083
+   MS-PAGOS                  UP        ms-pagos:172.21.0.10:8082
+
+==================================================================
+3. Se levantan 3 replicas de los tres microservicios
+==================================================================
+El archivo docker-compose.escalado.yml quita el nombre fijo de contenedor
+y el puerto del anfitrion, que es lo unico que impedia tener mas de una
+replica. El resto del sistema ya estaba preparado: los BFF y el gateway
+resuelven lb://ms-cuentas, no una direccion.
+
+ Container banco-xyz-eft-ms-pagos-1 Healthy 
+ Container banco-xyz-eft-ms-pagos-3 Healthy 
+ Container banco-xyz-eft-ms-pagos-2 Healthy 
+ Container banco-xyz-eft-ms-pagos-1 Healthy 
+ Container banco-xyz-eft-ms-pagos-3 Healthy 
+ Container banco-xyz-eft-ms-pagos-2 Healthy 
+
+   Esperando a que las replicas nuevas se registren en Eureka...
+   SERVICE                STATUS
+   ms-clientes            Up About a minute (healthy)
+   ms-clientes            Up About a minute (healthy)
+   ms-clientes            Up About a minute (healthy)
+   ms-cuentas             Up About a minute (healthy)
+   ms-cuentas             Up About a minute (healthy)
+   ms-cuentas             Up About a minute (healthy)
+   ms-pagos               Up About a minute (healthy)
+   ms-pagos               Up About a minute (healthy)
+   ms-pagos               Up About a minute (healthy)
+
+==================================================================
+4. Eureka ve todas las instancias
+==================================================================
+   SERVICIO                  ESTADO    INSTANCIA
+   API-GATEWAY               UP        api-gateway:172.21.0.16:8080
+   AUTHORIZATION-SERVER      UP        authorization-server:172.21.0.7:9000
+   BFF-CAJERO                UP        bff-cajero:172.21.0.14:8093
+   BFF-MOVIL                 UP        bff-movil:172.21.0.8:8092
+   BFF-WEB                   UP        bff-web:172.21.0.9:8091
+   MS-CLIENTES               UP        ms-clientes:172.21.0.21:8084
+   MS-CLIENTES               UP        ms-clientes:172.21.0.17:8084
+   MS-CLIENTES               UP        ms-clientes:172.21.0.20:8084
+   MS-CUENTAS                UP        ms-cuentas:172.21.0.10:8081
+   MS-CUENTAS                UP        ms-cuentas:172.21.0.18:8081
+   MS-CUENTAS                UP        ms-cuentas:172.21.0.11:8081
+   MS-NOTIFICACIONES         UP        ms-notificaciones:172.21.0.13:8083
+   MS-PAGOS                  UP        ms-pagos:172.21.0.12:8082
+   MS-PAGOS                  UP        ms-pagos:172.21.0.22:8082
+   MS-PAGOS                  UP        ms-pagos:172.21.0.19:8082
+
+==================================================================
+5. La prueba de verdad: el gateway reparte entre las replicas
+==================================================================
+Treinta consultas seguidas a la misma ruta. El campo 'instancia' de cada
+respuesta delata cual contesto; si el balanceo fuera decorativo, saldria
+siempre la misma.
+
+   --- ms-clientes (GET /api/clientes) ---
+   INSTANCIA QUE RESPONDIO                 VECES
+   ms-clientes:172.21.0.17:8084            10
+   ms-clientes:172.21.0.20:8084            10
+   ms-clientes:172.21.0.21:8084            10
+   instancias distintas: 3
+
+   --- ms-pagos (GET /api/pagos) ---
+   INSTANCIA QUE RESPONDIO                 VECES
+   ms-pagos:172.21.0.12:8082               10
+   ms-pagos:172.21.0.19:8082               10
+   ms-pagos:172.21.0.22:8082               10
+   instancias distintas: 3
+
+==================================================================
+6. El trabajo de Kafka tambien se reparte
+==================================================================
+Las replicas de ms-cuentas comparten grupo de consumidores, de modo que
+Kafka les asigna particiones distintas del mismo topico. Es el otro lado
+del escalado: no solo se reparten las peticiones HTTP, tambien los
+eventos.
+
+   
+   GROUP           TOPIC                   PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID                                                HOST            CLIENT-ID
+   ms-cuentas      banco.pagos.registrados 0          -               0               -               consumer-ms-cuentas-1-2da13aac-d3a9-4a55-a279-79a805dc685c /172.21.0.11    consumer-ms-cuentas-1
+   Con un solo topico de una particion, solo una replica consume y las
+   demas quedan en reserva: es el comportamiento correcto de Kafka, no
+   un fallo. Para repartir de verdad hacen falta tantas particiones como
+   consumidores, y eso se configura al crear el topico.
+
+==================================================================
+7. Vuelta a una sola instancia
+==================================================================
+ Container banco-xyz-eft-ms-pagos-1 Healthy 
+ Container banco-xyz-eft-ms-pagos-1 Healthy 
+ Container banco-xyz-eft-ms-cuentas-1 Healthy 
+
+   Nota: se vuelve con el MISMO archivo de escalado. Volver al compose
+   normal recrearia los contenedores con nombre fijo, y eso reinicia los
+   servicios sin necesidad.
+
+==================================================================
+Fin de la evidencia de escalado
+==================================================================

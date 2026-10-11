@@ -1,0 +1,33 @@
+# Configuracion exclusiva de las pruebas de ms-notificaciones.
+spring:
+  cloud:
+    config:
+      enabled: false
+  config:
+    import: ""
+  kafka:
+    bootstrap-servers: localhost:59092
+    consumer:
+      group-id: ms-notificaciones-pruebas
+    listener:
+      auto-startup: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:59000/oauth2/jwks
+
+server:
+  port: 8083
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+banco:
+  notificaciones:
+    # Tope pequeno a proposito: asi una prueba puede comprobar el descarte de
+    # las mas antiguas sin generar doscientos avisos.
+    maximo-en-memoria: 5

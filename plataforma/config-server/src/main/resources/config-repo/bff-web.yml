@@ -1,0 +1,30 @@
+# BFF Web: canal de navegador.
+#
+# Entrega la vista COMPLETA porque una pantalla de escritorio tiene espacio
+# para mostrarla y la conexion rara vez es el cuello de botella. Agrupa en una
+# sola respuesta lo que de otro modo serian tres llamadas del navegador: perfil
+# del titular, cuentas y movimientos.
+server:
+  port: ${SERVER_PORT:8091}
+
+spring:
+  kafka:
+    consumer:
+      group-id: bff-web
+
+banco:
+  canal: WEB
+  servicio-clientes: ms-clientes
+  servicio-cuentas: ms-cuentas
+  servicio-pagos: ms-pagos
+  oauth:
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:9000/oauth2/token}
+    # Cada canal es un cliente OAuth 2.0 distinto. No es burocracia: el token
+    # del cajero no sirve en el movil ni al reves, de modo que comprometer un
+    # canal no abre los otros dos.
+    client-id: ${OAUTH_CLIENT_ID:canal-web}
+    client-secret: ${OAUTH_CLIENT_SECRET:canal-web-secreto-2026}
+    scopes: clientes.leer cuentas.leer cuentas.escribir pagos.leer pagos.escribir
+  presentacion:
+    # Cuantos movimientos acompanan a cada cuenta en el panel.
+    movimientos-por-cuenta: 10

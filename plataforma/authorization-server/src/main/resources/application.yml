@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: authorization-server
+  config:
+    import: ${CONFIG_IMPORT:optional:configserver:http://localhost:8888}
+
+server:
+  port: 9000
+
+banco:
+  oauth:
+    # El emisor y el redirect deben ser direcciones que el NAVEGADOR del usuario
+    # pueda resolver. Dentro de Docker los servicios se hablan por nombre de
+    # contenedor, pero el navegador vive fuera de esa red: si aqui se pusiera
+    # "http://authorization-server:9000", la redireccion del login llevaria al
+    # usuario a un host inexistente. Por eso se mantiene localhost incluso en
+    # Compose, y los microservicios resuelven el JWK por nombre de contenedor
+    # mediante una propiedad aparte.
+    issuer: ${OAUTH_ISSUER:http://localhost:9000}
+    # 127.0.0.1 y no localhost: el servidor de autorizacion rechaza "localhost"
+    # en un redirect URI registrado, siguiendo la recomendacion de la RFC 8252
+    # de usar la IP de loopback para clientes nativos.
+    redirect-uri: ${OAUTH_REDIRECT_URI:http://127.0.0.1:9000/autorizado}
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.security.oauth2: DEBUG
+    com.duoc.bancoxyz: DEBUG

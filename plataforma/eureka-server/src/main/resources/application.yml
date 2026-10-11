@@ -1,0 +1,38 @@
+server:
+  port: 8761
+
+spring:
+  application:
+    name: eureka-server
+
+eureka:
+  client:
+    # El propio registro no se registra ni se descubre a si mismo: es el punto
+    # de partida del que dependen los demas.
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    # Se desactiva el modo de autoproteccion. En produccion evita que una caida
+    # de red elimine instancias sanas del registro; en un entorno local hace lo
+    # contrario: mantiene en pantalla servicios que ya se detuvieron, lo que
+    # confunde al revisar la evidencia.
+    enable-self-preservation: false
+    eviction-interval-timer-in-ms: 5000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.netflix.eureka: WARN
+    com.netflix.discovery: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{28} - %msg%n"

@@ -1,0 +1,81 @@
+# batch-financiero: la migracion de los procesos del sistema legado.
+#
+# No es un servicio que quede escuchando: arranca, ejecuta los tres jobs y
+# termina. Por eso no se registra en Eureka ni expone API de negocio.
+#
+# Es ademas el unico componente autorizado a escribir en las bases de los tres
+# microservicios. Eso parece contradecir la regla de "una base por servicio",
+# y no la contradice: una migracion es precisamente la operacion que puebla
+# esas bases antes de que el sistema entre en servicio. Lo que no ocurre nunca
+# es que el batch escriba en ellas en tiempo de ejecucion.
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  batch:
+    jdbc:
+      # Spring Batch guarda su propio metadato -ejecuciones, pasos, estados- y
+      # lo necesita creado antes del primer arranque.
+      initialize-schema: always
+    job:
+      # Los jobs NO se lanzan al arrancar: los dispara el script de migracion o
+      # el endpoint REST. Arrancarlos solos haria que cada reinicio del
+      # contenedor reprocesara el legado entero.
+      enabled: false
+  sql:
+    init:
+      mode: always
+      # Tablas de trabajo del batch: las de los informes y la de registros
+      # rechazados. Son distintas de las que crea Spring Batch para su propio
+      # metadato, que se inicializan con batch.jdbc.initialize-schema.
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: false
+  datasource:
+    # Base propia para el metadato de Spring Batch y para los informes.
+    url: ${DB_URL:jdbc:postgresql://localhost:5436/bancoxyz_batch}
+    username: ${DB_USER:bancoxyz}
+    password: ${DB_PASSWORD:bancoxyz}
+    hikari:
+      pool-name: batch-pool
+      # Mas grande que la de los servicios: con particionado hay varios hilos
+      # escribiendo a la vez, y un pool corto los serializa y anula la ganancia.
+      maximum-pool-size: 20
+
+eureka:
+  client:
+    # Un proceso que vive segundos no debe aparecer en el registro: quedaria
+    # como instancia muerta hasta que expire el arriendo, y alguien podria
+    # intentar enrutar hacia el.
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+banco:
+  migracion:
+    # Carpeta con los CSV del sistema legado, montada en el contenedor.
+    origen: ${ORIGEN_DATOS:/datos/legacy}
+    semana: ${SEMANA_DATOS:semana_3}
+    salida: ${SALIDA_INFORMES:/datos/salida}
+    # Tamano del fragmento: cada cuantos registros se confirma la transaccion.
+    # Mas grande rinde mas pero reprocesa mas al fallar; 250 fue el optimo
+    # medido en la Experiencia 1 sobre este mismo volumen.
+    tamano-fragmento: ${TAMANO_FRAGMENTO:250}
+    # Particiones del job paralelo. Es el parametro de escalabilidad vertical
+    # del batch: cada particion es un hilo con su propio rango del archivo.
+    particiones: ${PARTICIONES:8}
+    # Destinos de la migracion. El batch conoce las bases porque ESTA migrando
+    # a ellas; ningun otro componente tiene estas credenciales.
+    destino:
+      clientes-url: ${DB_CLIENTES_URL:jdbc:postgresql://localhost:5436/bancoxyz_clientes}
+      cuentas-url: ${DB_CUENTAS_URL:jdbc:postgresql://localhost:5436/bancoxyz_cuentas}
+      pagos-url: ${DB_PAGOS_URL:jdbc:postgresql://localhost:5436/bancoxyz_pagos}
+    # Mismo umbral que aplica ms-clientes en caliente, para que el segmento
+    # que deja la migracion coincida con el que calcularia el servicio.
+    umbral-preferente: 50000
+  intereses:
+    # Tasas trimestrales por tipo de cuenta, parametrizadas. Una tasa en el
+    # codigo obliga a reconstruir y redesplegar cuando cambia la politica
+    # comercial, que es justo lo que mas cambia.
+    tasa-ahorro: 0.0150
+    tasa-prestamo: 0.0325
+    tasa-hipoteca: 0.0275
