@@ -27,8 +27,11 @@ y Kafka, todo orquestado con Docker Compose.
 13. [Qué falta](#13-qué-falta)
 
 > **Repositorio:** <https://github.com/aandrewsvde/duoc-desarrollo-backend-3-eft>
+
 > **Cómo ejecutarlo:** [`instrucciones.md`](instrucciones.md)
+
 > **Cómo desplegarlo en AWS:** [`despliegue.md`](despliegue.md)
+
 > **Informe técnico:** `informe/Informe_tecnico_EFT_Agustin_Andrews.pdf`
 
 ---
